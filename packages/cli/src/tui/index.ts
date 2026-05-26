@@ -1,6 +1,9 @@
-export { App } from './App.js';
-export { CommandMenu } from './CommandMenu.js';
-export { StatusBar, type AgentStatus } from './StatusBar.js';
-export { OutputDisplay } from './OutputDisplay.js';
-export { InputPrompt } from './InputPrompt.js';
-export { executeCommand, type CommandResult } from './executor.js';
+export { ChatInterface } from './ChatInterface.js';
+export { ModelConfig } from './ModelConfig.js';
+export { DirectorySelector } from './DirectorySelector.js';
+export { MessageList } from './MessageList.js';
+export { StatusBar } from './StatusBar.js';
+export { QueryEngine } from './QueryEngine.js';
+export { ProviderManager } from './provider.js';
+export { TOOLS } from './tools.js';
+export * from './types.js';
