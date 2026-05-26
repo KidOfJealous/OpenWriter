@@ -1,7 +1,16 @@
-import type { LLMProvider, Message, ProviderConfig } from './types.js';
+import type { LLMProvider, Message, ProviderConfig, ProviderUsage } from './types.js';
+
+type ChatCompletionUsage = {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+  prompt_cache_hit_tokens?: number;
+  prompt_cache_miss_tokens?: number;
+};
 
 export class DeepSeekProvider implements LLMProvider {
   name = 'deepseek';
+  private lastUsage?: ProviderUsage;
 
   async chat(messages: Message[], config?: ProviderConfig): Promise<string> {
     const apiKey = config?.apiKey ?? process.env.DEEPSEEK_API_KEY;
@@ -29,7 +38,11 @@ export class DeepSeekProvider implements LLMProvider {
       throw new Error(`DeepSeek API error ${res.status}: ${text}`);
     }
 
-    const data = await res.json() as { choices: [{ message: { content: string } }] };
+    const data = await res.json() as {
+      choices: [{ message: { content: string } }];
+      usage?: ChatCompletionUsage;
+    };
+    this.lastUsage = normalizeUsage(data.usage);
     return data.choices[0].message.content;
   }
 
@@ -53,10 +66,15 @@ export class DeepSeekProvider implements LLMProvider {
       throw new Error(`Failed to parse JSON from: ${text.slice(0, 200)}`);
     }
   }
+
+  getLastUsage(): ProviderUsage | undefined {
+    return this.lastUsage;
+  }
 }
 
 export class OpenAIProvider implements LLMProvider {
   name = 'openai';
+  private lastUsage?: ProviderUsage;
 
   async chat(messages: Message[], config?: ProviderConfig): Promise<string> {
     const apiKey = config?.apiKey ?? process.env.OPENAI_API_KEY;
@@ -84,7 +102,11 @@ export class OpenAIProvider implements LLMProvider {
       throw new Error(`OpenAI API error ${res.status}: ${text}`);
     }
 
-    const data = await res.json() as { choices: [{ message: { content: string } }] };
+    const data = await res.json() as {
+      choices: [{ message: { content: string } }];
+      usage?: ChatCompletionUsage;
+    };
+    this.lastUsage = normalizeUsage(data.usage);
     return data.choices[0].message.content;
   }
 
@@ -97,6 +119,10 @@ export class OpenAIProvider implements LLMProvider {
       if (match) return JSON.parse(match[1].trim()) as T;
       throw new Error(`Failed to parse JSON from: ${text.slice(0, 200)}`);
     }
+  }
+
+  getLastUsage(): ProviderUsage | undefined {
+    return this.lastUsage;
   }
 }
 
@@ -140,6 +166,17 @@ export class OllamaProvider implements LLMProvider {
       throw new Error(`Failed to parse JSON from: ${text.slice(0, 200)}`);
     }
   }
+}
+
+function normalizeUsage(usage?: ChatCompletionUsage): ProviderUsage | undefined {
+  if (!usage) return undefined;
+  return {
+    promptTokens: usage.prompt_tokens,
+    completionTokens: usage.completion_tokens,
+    totalTokens: usage.total_tokens,
+    promptCacheHitTokens: usage.prompt_cache_hit_tokens,
+    promptCacheMissTokens: usage.prompt_cache_miss_tokens,
+  };
 }
 
 export function createProvider(name: string, config?: Partial<ProviderConfig>): LLMProvider {

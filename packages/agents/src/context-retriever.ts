@@ -8,16 +8,32 @@ import type {
   DeprecatedEntry,
   ProjectProfile,
 } from '@openwriter/core';
+import { hashText, resolveAggressiveCachePolicy } from '@openwriter/core';
 import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { join, resolve } from 'path';
+
+interface CachedFile {
+  mtimeMs: number;
+  size: number;
+  content: string;
+}
 
 export class ContextRetriever implements WritingAgent {
   name = 'context-retriever';
   description = '从项目文件中检索相关设定、角色、时间线，生成上下文包';
 
+  private static fileCache = new Map<string, CachedFile>();
+  private static tokenCache = new Map<string, string[]>();
+  private fileCacheHits = 0;
+  private fileCacheMisses = 0;
+  private tokenCacheHits = 0;
+  private tokenCacheMisses = 0;
+
   async execute(context: WritingContextPacket, _options?: AgentOptions): Promise<AgentResult> {
+    this.resetRunStats();
     const projectDir = process.cwd();
     const profile = context.projectProfile;
+    const policy = resolveAggressiveCachePolicy(profile.cache);
 
     const canon = this.loadCanonEntries(projectDir, profile);
     const drafts = this.loadDraftEntries(projectDir, profile);
@@ -28,10 +44,13 @@ export class ContextRetriever implements WritingAgent {
     const scoredCanon = this.scoreAndRank(canon, context.task, retrievalConfig);
     const scoredDrafts = this.scoreAndRank(drafts.map(d => ({ ...d, status: 'canon' as const, source: d.source, content: d.content, tags: [] as string[] })), context.task, retrievalConfig);
 
+    const selectedCanon = this.selectScored(scoredCanon, policy.maxCanonEntries, policy.stablePrefix);
+    const selectedDrafts = this.selectScored(scoredDrafts, policy.maxDraftEntries, false);
+
     const packet: WritingContextPacket = {
       ...context,
-      relevantCanon: scoredCanon.map(s => s.entry),
-      relevantDrafts: scoredDrafts.slice(0, 5).map(s => ({
+      relevantCanon: selectedCanon.map(s => s.entry),
+      relevantDrafts: selectedDrafts.map(s => ({
         source: (s.entry as any).source,
         content: (s.entry as any).content,
       })),
@@ -51,9 +70,31 @@ export class ContextRetriever implements WritingAgent {
             source: s.entry.source,
             score: s.score,
           })),
+          cache: {
+            policy: policy.strategy,
+            selectedCanon: selectedCanon.length,
+            selectedDrafts: selectedDrafts.length,
+            fileHits: this.fileCacheHits,
+            fileMisses: this.fileCacheMisses,
+            tokenHits: this.tokenCacheHits,
+            tokenMisses: this.tokenCacheMisses,
+          },
         },
       },
+      metadata: {
+        fileCacheHits: this.fileCacheHits,
+        fileCacheMisses: this.fileCacheMisses,
+        tokenCacheHits: this.tokenCacheHits,
+        tokenCacheMisses: this.tokenCacheMisses,
+      },
     };
+  }
+
+  private resetRunStats(): void {
+    this.fileCacheHits = 0;
+    this.fileCacheMisses = 0;
+    this.tokenCacheHits = 0;
+    this.tokenCacheMisses = 0;
   }
 
   private scoreAndRank<T extends { content: string; status?: string }>(
@@ -82,6 +123,14 @@ export class ContextRetriever implements WritingAgent {
   }
 
   private tokenize(text: string): string[] {
+    const cacheKey = hashText(text);
+    const cached = ContextRetriever.tokenCache.get(cacheKey);
+    if (cached) {
+      this.tokenCacheHits++;
+      return cached;
+    }
+
+    this.tokenCacheMisses++;
     // Chinese: split into characters and bigrams
     // English: split by whitespace and lowercase
     const chinese = text.match(/[\u4e00-\u9fff]+/g) ?? [];
@@ -104,6 +153,7 @@ export class ContextRetriever implements WritingAgent {
       terms.push(word.toLowerCase());
     }
 
+    ContextRetriever.tokenCache.set(cacheKey, terms);
     return terms;
   }
 
@@ -133,7 +183,7 @@ export class ContextRetriever implements WritingAgent {
       const fullPath = resolve(projectDir, dir);
       if (!existsSync(fullPath)) continue;
       for (const file of this.findMarkdownFiles(fullPath)) {
-        const content = readFileSync(file, 'utf-8');
+        const content = this.readCachedFile(file);
         entries.push({
           source: file,
           content,
@@ -152,7 +202,7 @@ export class ContextRetriever implements WritingAgent {
   private readMarkdownFiles(dir: string): CanonEntry[] {
     const entries: CanonEntry[] = [];
     for (const file of this.findMarkdownFiles(dir)) {
-      const content = readFileSync(file, 'utf-8');
+      const content = this.readCachedFile(file);
       entries.push({
         source: file,
         status: 'canon',
@@ -176,6 +226,39 @@ export class ContextRetriever implements WritingAgent {
       }
     }
     return files;
+  }
+
+  private selectScored<T extends { source?: string; content: string }>(
+    scored: Array<{ entry: T; score: number }>,
+    maxEntries: number,
+    stableOrder: boolean,
+  ): Array<{ entry: T; score: number }> {
+    const selected = scored.slice(0, maxEntries);
+    if (!stableOrder) return selected;
+
+    return [...selected].sort((a, b) => {
+      const sourceCompare = (a.entry.source ?? '').localeCompare(b.entry.source ?? '');
+      if (sourceCompare !== 0) return sourceCompare;
+      return hashText(a.entry.content).localeCompare(hashText(b.entry.content));
+    });
+  }
+
+  private readCachedFile(file: string): string {
+    const stat = statSync(file);
+    const cached = ContextRetriever.fileCache.get(file);
+    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+      this.fileCacheHits++;
+      return cached.content;
+    }
+
+    this.fileCacheMisses++;
+    const content = readFileSync(file, 'utf-8');
+    ContextRetriever.fileCache.set(file, {
+      mtimeMs: stat.mtimeMs,
+      size: stat.size,
+      content,
+    });
+    return content;
   }
 
   private extractTaskEntities(task: string): string[] {

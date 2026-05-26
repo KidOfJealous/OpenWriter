@@ -22,7 +22,7 @@ export class FileSystemConnector {
   }
 
   initProject(name?: string): ProjectConfig {
-    const templatePath = resolve(__dirname, '../../../configs/project-template.yaml');
+    const templatePath = this.findProjectTemplatePath();
     let template: ProjectConfig;
 
     if (existsSync(templatePath)) {
@@ -62,6 +62,15 @@ export class FileSystemConnector {
     writeFileSync(fullPath, content, 'utf-8');
   }
 
+  private findProjectTemplatePath(): string {
+    const candidates = [
+      resolve(__dirname, '../../../configs/project-template.yaml'),
+      resolve(__dirname, '../../../../configs/project-template.yaml'),
+    ];
+
+    return candidates.find(path => existsSync(path)) ?? candidates[0];
+  }
+
   private getDefaultTemplate(): ProjectConfig {
     return {
       project: {
@@ -92,6 +101,19 @@ export class FileSystemConnector {
         vectorWeight: 0.3,
         recencyWeight: 0.2,
         deprecatedPenalty: 0.8,
+      },
+      cache: {
+        enabled: true,
+        strategy: 'aggressive',
+        stablePrefix: true,
+        appendOnlyWorkflowLog: true,
+        maxCanonEntries: 32,
+        maxDraftEntries: 8,
+        maxCanonEntryChars: 4000,
+        maxDraftEntryChars: 12000,
+        maxWorkflowLogEntries: 12,
+        maxResultChars: 1800,
+        maxTotalContextChars: 120000,
       },
       models: {},
     };

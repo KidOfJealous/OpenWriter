@@ -6,6 +6,7 @@ import type {
   LLMProvider,
 } from '@openwriter/core';
 import { DeepSeekProvider } from '@openwriter/core';
+import { formatWorkflowLog } from './prompt-cache.js';
 
 interface StyleIssue {
   type: 'translationese' | 'repetition' | 'ai_taste' | 'over_explain' | 'slogan' | 'modern_register' | 'pov_break' | 'other';
@@ -47,10 +48,12 @@ export class StyleEditor implements WritingAgent {
       type: 'json',
       content: result,
       metadata: {
+        model: options?.model ?? 'deepseek-chat',
         issueCount: result.length,
         translationese: result.filter(r => r.type === 'translationese').length,
         aiTaste: result.filter(r => r.type === 'ai_taste').length,
         overExplain: result.filter(r => r.type === 'over_explain').length,
+        providerUsage: this.provider.getLastUsage?.(),
       },
     };
   }
@@ -73,6 +76,7 @@ export class StyleEditor implements WritingAgent {
 
 【文风要求】
 ${styleRules.join('\n')}
+${formatWorkflowLog(context)}
 
 【待审文本】
 ${draftText}

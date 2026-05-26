@@ -6,6 +6,7 @@ import type {
   LLMProvider,
 } from '@openwriter/core';
 import { DeepSeekProvider } from '@openwriter/core';
+import { formatWorkflowLog } from './prompt-cache.js';
 
 interface PlotAnalysis {
   issue: string;
@@ -49,9 +50,11 @@ export class PlotArchitect implements WritingAgent {
       type: 'json',
       content: result,
       metadata: {
+        model: options?.model ?? 'deepseek-chat',
         issueCount: result.length,
         highSeverity: result.filter(r => r.severity === 'high').length,
         pacingIssues: result.filter(r => r.pacingIssue).length,
+        providerUsage: this.provider.getLastUsage?.(),
       },
     };
   }
@@ -69,6 +72,7 @@ export class PlotArchitect implements WritingAgent {
 
 【相关设定】
 ${canonText}
+${formatWorkflowLog(context)}
 
 【当前文本】
 ${draftText}

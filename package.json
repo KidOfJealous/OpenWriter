@@ -8,6 +8,10 @@
   ],
   "scripts": {
     "build": "npm run build -w packages/core -w packages/agents -w packages/connectors -w packages/cli",
+    "package": "node scripts/package.mjs --all",
+    "package:win": "node scripts/package.mjs --platform win32",
+    "package:linux": "node scripts/package.mjs --platform linux",
+    "package:mac": "node scripts/package.mjs --platform darwin",
     "test": "vitest run",
     "wa": "npx tsx packages/cli/src/index.ts"
   },

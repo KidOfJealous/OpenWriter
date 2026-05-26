@@ -7,6 +7,7 @@ import type {
   LLMProvider,
 } from '@openwriter/core';
 import { DeepSeekProvider } from '@openwriter/core';
+import { formatWorkflowLog } from './prompt-cache.js';
 
 interface MemoryChange {
   type: 'new' | 'modified' | 'deprecated';
@@ -52,9 +53,11 @@ export class MemoryCurator implements WritingAgent {
         changelog: this.formatChangelog(changes),
       },
       metadata: {
+        model: options?.model ?? 'deepseek-chat',
         newCount: changes.filter(c => c.type === 'new').length,
         modifiedCount: changes.filter(c => c.type === 'modified').length,
         deprecatedCount: changes.filter(c => c.type === 'deprecated').length,
+        providerUsage: this.provider.getLastUsage?.(),
       },
     };
   }
@@ -72,6 +75,7 @@ export class MemoryCurator implements WritingAgent {
 
 【已有设定】
 ${canonText}
+${formatWorkflowLog(context)}
 
 【新文本】
 ${draftText}

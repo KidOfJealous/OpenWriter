@@ -6,6 +6,7 @@ import type {
   LLMProvider,
 } from '@openwriter/core';
 import { DeepSeekProvider } from '@openwriter/core';
+import { formatWorkflowLog } from './prompt-cache.js';
 
 interface CritiqueItem {
   priority: 'P0' | 'P1' | 'P2';
@@ -51,9 +52,11 @@ export class Critic implements WritingAgent {
       type: 'json',
       content: result,
       metadata: {
+        model: options?.model ?? 'deepseek-chat',
         p0Count: p0.length,
         p1Count: p1.length,
         p2Count: p2.length,
+        providerUsage: this.provider.getLastUsage?.(),
       },
     };
   }
@@ -71,6 +74,7 @@ export class Critic implements WritingAgent {
 
 【相关设定】
 ${canonText}
+${formatWorkflowLog(context)}
 
 【待审文本】
 ${draftText}

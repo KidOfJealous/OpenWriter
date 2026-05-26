@@ -32,6 +32,7 @@ export interface ProjectProfile {
   style?: StyleProfile;
   memory?: MemoryConfig;
   retrieval?: RetrievalConfig;
+  cache?: Partial<AggressiveCachePolicy>;
 }
 
 export interface StyleProfile {
@@ -62,6 +63,43 @@ export interface WritingContextPacket {
   deprecatedItems: DeprecatedEntry[];
   openQuestions: string[];
   constraints: string[];
+  workflowLog?: WorkflowLogEntry[];
+  cache?: CacheSnapshot;
+}
+
+export interface AggressiveCachePolicy {
+  enabled: boolean;
+  strategy: 'conservative' | 'aggressive';
+  stablePrefix: boolean;
+  appendOnlyWorkflowLog: boolean;
+  maxCanonEntries: number;
+  maxDraftEntries: number;
+  maxCanonEntryChars: number;
+  maxDraftEntryChars: number;
+  maxWorkflowLogEntries: number;
+  maxResultChars: number;
+  maxTotalContextChars: number;
+}
+
+export interface WorkflowLogEntry {
+  index: number;
+  agent: string;
+  type: AgentResultType;
+  content: string;
+  contentHash: string;
+}
+
+export interface CacheSnapshot {
+  strategy: AggressiveCachePolicy['strategy'];
+  immutablePrefixHash: string;
+  immutablePrefixChars: number;
+  workflowLogChars: number;
+  approxContextTokens: number;
+  trimmed: {
+    canonEntries: number;
+    draftEntries: number;
+    workflowLogEntries: number;
+  };
 }
 
 // Agent interface
@@ -112,10 +150,55 @@ export interface ProviderConfig {
   maxTokens?: number;
 }
 
+export interface ProviderUsage {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+  promptCacheHitTokens?: number;
+  promptCacheMissTokens?: number;
+}
+
+export interface ModelPricing {
+  provider: string;
+  model: string;
+  currency: 'USD';
+  inputCacheHitUsdPerMillion: number;
+  inputCacheMissUsdPerMillion: number;
+  outputUsdPerMillion: number;
+}
+
+export interface UsageCostEstimate {
+  agent: string;
+  model: string;
+  usage: ProviderUsage;
+  pricing?: ModelPricing;
+  promptTokens: number;
+  completionTokens: number;
+  cacheHitTokens: number;
+  cacheMissTokens: number;
+  cacheHitRate?: number;
+  estimatedUsd?: number;
+  uncachedEstimatedUsd?: number;
+  estimatedSavingsUsd?: number;
+}
+
+export interface UsageCostSummary {
+  estimates: UsageCostEstimate[];
+  promptTokens: number;
+  completionTokens: number;
+  cacheHitTokens: number;
+  cacheMissTokens: number;
+  cacheHitRate?: number;
+  estimatedUsd?: number;
+  uncachedEstimatedUsd?: number;
+  estimatedSavingsUsd?: number;
+}
+
 export interface LLMProvider {
   name: string;
   chat(messages: Message[], config?: ProviderConfig): Promise<string>;
   chatJson<T>(messages: Message[], schema: object, config?: ProviderConfig): Promise<T>;
+  getLastUsage?(): ProviderUsage | undefined;
 }
 
 // Project config (parsed from YAML)
@@ -150,5 +233,6 @@ export interface ProjectConfig {
     recencyWeight: number;
     deprecatedPenalty: number;
   };
+  cache?: Partial<AggressiveCachePolicy>;
   models: Record<string, string>;
 }

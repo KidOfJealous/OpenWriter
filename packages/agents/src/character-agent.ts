@@ -6,6 +6,7 @@ import type {
   LLMProvider,
 } from '@openwriter/core';
 import { DeepSeekProvider } from '@openwriter/core';
+import { formatWorkflowLog } from './prompt-cache.js';
 
 interface CharacterAnalysis {
   name: string;
@@ -51,8 +52,10 @@ export class CharacterAgent implements WritingAgent {
       type: 'json',
       content: result,
       metadata: {
+        model: options?.model ?? 'deepseek-chat',
         characterCount: result.length,
         oocCount: result.filter(c => c.isOOC).length,
+        providerUsage: this.provider.getLastUsage?.(),
       },
     };
   }
@@ -70,6 +73,7 @@ export class CharacterAgent implements WritingAgent {
 
 【角色设定】
 ${canonText}
+${formatWorkflowLog(context)}
 
 【当前文本】
 ${draftText}

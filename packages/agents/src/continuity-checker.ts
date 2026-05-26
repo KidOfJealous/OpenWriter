@@ -6,6 +6,7 @@ import type {
   LLMProvider,
 } from '@openwriter/core';
 import { DeepSeekProvider } from '@openwriter/core';
+import { formatWorkflowLog } from './prompt-cache.js';
 
 interface ContinuityIssue {
   severity: 'hard' | 'soft' | 'uncertain';
@@ -43,9 +44,11 @@ export class ContinuityChecker implements WritingAgent {
       type: 'json',
       content: result,
       metadata: {
+        model: options?.model ?? 'deepseek-chat',
         hardConflicts: result.filter(r => r.severity === 'hard').length,
         softRisks: result.filter(r => r.severity === 'soft').length,
         uncertainties: result.filter(r => r.severity === 'uncertain').length,
+        providerUsage: this.provider.getLastUsage?.(),
       },
     };
   }
@@ -67,6 +70,7 @@ export class ContinuityChecker implements WritingAgent {
 
 【已有设定】
 ${canonText}
+${formatWorkflowLog(context)}
 
 【当前文本】
 ${draftText}

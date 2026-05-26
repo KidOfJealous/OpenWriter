@@ -6,6 +6,7 @@ import type {
   LLMProvider,
 } from '@openwriter/core';
 import { DeepSeekProvider } from '@openwriter/core';
+import { formatWorkflowLog } from './prompt-cache.js';
 
 export class ProseWriter implements WritingAgent {
   name = 'prose-writer';
@@ -39,6 +40,7 @@ export class ProseWriter implements WritingAgent {
       metadata: {
         model: options?.model ?? 'deepseek-chat',
         temperature: options?.temperature ?? 0.8,
+        providerUsage: this.provider.getLastUsage?.(),
       },
     };
   }
@@ -60,7 +62,7 @@ export class ProseWriter implements WritingAgent {
       .map(e => `【${e.source}】(${e.status})\n${e.content.slice(0, 500)}`)
       .join('\n\n---\n\n');
 
-    return `${styleRules}\n\n以下是相关设定和上下文：\n\n${canonContext}`;
+    return `${styleRules}\n\n以下是相关设定和上下文：\n\n${canonContext}${formatWorkflowLog(context)}`;
   }
 
   private buildUserPrompt(context: WritingContextPacket): string {

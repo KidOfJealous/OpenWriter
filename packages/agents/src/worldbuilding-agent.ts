@@ -6,6 +6,7 @@ import type {
   LLMProvider,
 } from '@openwriter/core';
 import { DeepSeekProvider } from '@openwriter/core';
+import { formatWorkflowLog } from './prompt-cache.js';
 
 interface WorldbuildingIssue {
   category: 'institution' | 'geography' | 'culture' | 'technology' | 'magic' | 'terminology';
@@ -48,9 +49,11 @@ export class WorldbuildingAgent implements WritingAgent {
       type: 'json',
       content: result,
       metadata: {
+        model: options?.model ?? 'deepseek-chat',
         issueCount: result.length,
         hardConflicts: result.filter(r => r.severity === 'hard').length,
         inconsistentItems: result.filter(r => !r.isSelfConsistent).length,
+        providerUsage: this.provider.getLastUsage?.(),
       },
     };
   }
@@ -68,6 +71,7 @@ export class WorldbuildingAgent implements WritingAgent {
 
 【已有世界观设定】
 ${canonText}
+${formatWorkflowLog(context)}
 
 【新文本】
 ${draftText}
