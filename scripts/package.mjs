@@ -27,13 +27,20 @@ if (!skipBuild) {
 await mkdir(releaseDir, { recursive: true });
 
 for (const platform of targets) {
-  await packageTarget(platform);
+  try {
+    await packageTarget(platform);
+    console.log(`Packaged ${platform} successfully!`);
+  } catch (err) {
+    console.error(`Failed to package ${platform}:`, err);
+  }
 }
 
 async function packageTarget(platform) {
+  console.log(`Packaging for ${platform}...`);
   const targetName = targetLabel(platform);
   const packageName = `openwriter-${rootPackage.version}-${targetName}`;
   const packageDir = join(releaseDir, packageName);
+  console.log(`Package directory: ${packageDir}`);
 
   await rm(packageDir, { recursive: true, force: true });
   await rm(join(releaseDir, `${packageName}.zip`), { force: true });
@@ -48,7 +55,13 @@ async function packageTarget(platform) {
     await copyWorkspacePackage(packageName, packageDir);
   }
 
-  for (const packageName of ['commander', 'yaml', 'chalk']) {
+  // Copy CLI dependencies for TUI
+  const cliPackageJson = JSON.parse(await readFile(join(rootDir, 'packages', 'cli', 'package.json'), 'utf-8'));
+  const cliDependencies = Object.keys(cliPackageJson.dependencies || {}).filter(
+    name => !name.startsWith('@openwriter')
+  );
+  
+  for (const packageName of cliDependencies) {
     await copyExternalPackage(packageName, packageDir);
   }
 
@@ -297,6 +310,7 @@ function run(command, args, cwd) {
   execFileSync(command, args, {
     cwd,
     stdio: 'inherit',
+    shell: process.platform === 'win32',
   });
 }
 
