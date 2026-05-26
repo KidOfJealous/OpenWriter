@@ -1,0 +1,45 @@
+project:
+  name: "My Writing Project"
+  language: "zh-CN"
+  genre: "fantasy"
+  sourceOfTruth:
+    - "canon/"
+  draftDirs:
+    - "chapters/"
+    - "fragments/"
+
+writing:
+  defaultMode: "plan_then_write"
+  allowNewCanonWithoutConfirmation: false
+  allowMajorPlotChangeWithoutConfirmation: false
+
+style:
+  proseProfile: "custom"
+  descriptionDensity: "medium"
+  dialogueStyle: "restrained"
+  pov: "third_limited"
+  taboo:
+    - "不要口号化"
+    - "不要替角色总结情绪"
+
+memory:
+  canonStates:
+    - idea
+    - candidate
+    - canon
+    - deprecated
+  requireConfirmationForCanon: true
+
+retrieval:
+  exactMatchWeight: 0.5
+  vectorWeight: 0.3
+  recencyWeight: 0.2
+  deprecatedPenalty: 0.8
+
+models:
+  orchestrator: "deepseek-chat"
+  retriever: "deepseek-chat"
+  prose_writer: "deepseek-chat"
+  continuity_checker: "deepseek-chat"
+  critic: "deepseek-chat"
+  memory_curator: "deepseek-chat"
