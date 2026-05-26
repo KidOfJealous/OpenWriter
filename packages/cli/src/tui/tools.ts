@@ -1,40 +1,50 @@
 /**
- * Tools - Agent 可用的工具定义
+ * Tools - Agent 基础操作能力
  * 
- * Tool Use 是 Agent 的核心能力:
- * - LLM 根据用户意图决定调用什么工具
- * - 系统执行工具并返回结果
- * - LLM 根据结果继续推理
+ * Tools 是 Agent 的"手"，让 LLM 能操作真实世界。
+ * 业务逻辑通过 Tool 组合 + LLM 推理实现，而不是单独的 Tool。
  */
 
-import { Orchestrator } from '@openwriter/core';
-import {
-  ContextRetriever,
-  ProseWriter,
-  ContinuityChecker,
-  Critic,
-  MemoryCurator,
-  CharacterAgent,
-  PlotArchitect,
-  WorldbuildingAgent,
-  StyleEditor,
-  PatchAgent,
-} from '@openwriter/agents';
-import { FileSystemConnector } from '@openwriter/connectors';
-import type { WritingContextPacket, StyleProfile } from '@openwriter/core';
+import { existsSync, readdirSync, readFileSync, writeFileSync, statSync, mkdirSync } from 'fs';
+import { join, resolve, relative, dirname } from 'path';
+import { execSync } from 'child_process';
+
+// ==================== 上下文管理 ====================
+
+export interface AgentContext {
+  workDir: string;
+}
+
+let globalContext: AgentContext = { workDir: process.cwd() };
+
+export function initContext(workDir: string): AgentContext {
+  globalContext = { workDir };
+  process.chdir(workDir);
+  return globalContext;
+}
+
+export function getContext(): AgentContext {
+  return globalContext;
+}
+
+export function setWorkDir(dir: string): void {
+  globalContext.workDir = dir;
+  process.chdir(dir);
+}
+
+// ==================== Tool 类型定义 ====================
 
 export interface ToolParameter {
   type: 'string' | 'number' | 'boolean' | 'object' | 'array';
   description: string;
   required?: boolean;
-  enum?: string[];
 }
 
 export interface Tool {
   name: string;
   description: string;
   parameters: Record<string, ToolParameter>;
-  execute: (args: Record<string, unknown>) => Promise<unknown>;
+  execute: (args: Record<string, unknown>, context: AgentContext) => Promise<unknown>;
 }
 
 export interface ToolCall {
@@ -47,203 +57,286 @@ export interface ToolResult {
   content: unknown;
 }
 
-// ==================== Tools 定义 ====================
+// ==================== 基础 Tools ====================
 
 /**
- * init 工具 - 初始化写作项目
+ * read_file - 读取文件内容
  */
-export const initTool: Tool = {
-  name: 'init',
-  description: '初始化一个新的写作项目。创建项目配置文件 openwriter.yaml，设置 canon 和 draft 目录。',
+export const readFileTool: Tool = {
+  name: 'read_file',
+  description: '读取指定文件的内容。可以读取文本文件如 .md, .txt, .yaml, .json 等。',
   parameters: {
-    project_name: {
+    path: {
       type: 'string',
-      description: '项目名称，例如 "我的科幻小说"',
+      description: '文件路径，相对于工作目录',
       required: true,
     },
-    genre: {
-      type: 'string',
-      description: '作品类型，例如 "科幻"、"奇幻"、"言情"',
-      required: false,
-    },
-    language: {
-      type: 'string',
-      description: '写作语言，默认为 "zh-CN"',
-      required: false,
-      enum: ['zh-CN', 'en-US', 'ja-JP'],
-    },
   },
-  execute: async (args) => {
-    const connector = new FileSystemConnector();
-    const config = connector.initProject(args.project_name as string);
+  execute: async (args, context) => {
+    const filePath = resolve(context.workDir, args.path as string);
+    
+    if (!existsSync(filePath)) {
+      return { error: `文件不存在: ${args.path}` };
+    }
+
+    const content = readFileSync(filePath, 'utf-8');
+    const stats = statSync(filePath);
+    
     return {
-      message: `项目 "${config.project.name}" 已初始化`,
-      configPath: 'openwriter.yaml',
-      canonDirs: config.project.sourceOfTruth,
-      draftDirs: config.project.draftDirs,
+      path: args.path,
+      content,
+      size: stats.size,
+      lines: content.split('\n').length,
     };
   },
 };
 
 /**
- * write 工具 - 撰写内容
+ * write_file - 写入文件内容
  */
-export const writeTool: Tool = {
-  name: 'write',
-  description: '根据任务描述撰写新内容。可以是章节、场景、对话等。',
+export const writeFileTool: Tool = {
+  name: 'write_file',
+  description: '写入内容到文件。如果文件不存在会创建，如果目录不存在会创建目录。',
   parameters: {
-    task: {
+    path: {
       type: 'string',
-      description: '写作任务描述，例如 "写第一章开头，主角醒来发现自己在一个陌生的地方"',
+      description: '文件路径，相对于工作目录',
       required: true,
     },
-    context: {
-      type: 'string',
-      description: '额外上下文信息，例如已有角色、场景设定等',
-      required: false,
-    },
-    model: {
-      type: 'string',
-      description: '使用的模型，可选 deepseek-chat 或 deepseek-reasoner',
-      required: false,
-    },
-  },
-  execute: async (args) => {
-    // TODO: 实现写作逻辑
-    return {
-      content: '写作结果...',
-      task: args.task,
-    };
-  },
-};
-
-/**
- * revise 工具 - 修订内容
- */
-export const reviseTool: Tool = {
-  name: 'revise',
-  description: '修订、润色或改进已有内容。',
-  parameters: {
     content: {
       type: 'string',
-      description: '要修订的内容',
-      required: true,
-    },
-    goal: {
-      type: 'string',
-      description: '修订目标，例如 "加强冲突感"、"简化语言"、"增加细节描写"',
+      description: '要写入的文件内容',
       required: true,
     },
   },
-  execute: async (args) => {
+  execute: async (args, context) => {
+    const filePath = resolve(context.workDir, args.path as string);
+    const dir = dirname(filePath);
+    
+    // 创建目录
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
+
+    writeFileSync(filePath, args.content as string, 'utf-8');
+    
     return {
-      revisedContent: '修订后的内容...',
-      original: args.content,
-      goal: args.goal,
+      success: true,
+      path: args.path,
+      message: `已写入 ${args.path}`,
     };
   },
 };
 
 /**
- * check 工具 - 检查连续性
- */
-export const checkTool: Tool = {
-  name: 'check',
-  description: '检查内容的连续性和一致性。发现逻辑漏洞、设定冲突等问题。',
-  parameters: {
-    content: {
-      type: 'string',
-      description: '要检查的内容',
-      required: true,
-    },
-    scope: {
-      type: 'string',
-      description: '检查范围: "full" 全项目检查, "chapter" 单章节检查',
-      required: false,
-      enum: ['full', 'chapter'],
-    },
-  },
-  execute: async (args) => {
-    return {
-      issues: [],
-      summary: '检查完成，发现问题数量: 0',
-    };
-  },
-};
-
-/**
- * brainstorm 工具 - 头脑风暴
- */
-export const brainstormTool: Tool = {
-  name: 'brainstorm',
-  description: '头脑风暴，构思剧情、角色、设定、冲突等创意内容。',
-  parameters: {
-    topic: {
-      type: 'string',
-      description: '头脑风暴主题，例如 "如何让反派更有深度"、"主角的转折点"',
-      required: true,
-    },
-    type: {
-      type: 'string',
-      description: '构思类型',
-      required: false,
-      enum: ['plot', 'character', 'setting', 'conflict', 'theme'],
-    },
-  },
-  execute: async (args) => {
-    return {
-      ideas: ['想法1', '想法2', '想法3'],
-      topic: args.topic,
-    };
-  },
-};
-
-/**
- * ls 工具 - 列出文件
+ * ls - 列出目录内容
  */
 export const lsTool: Tool = {
   name: 'ls',
-  description: '列出当前目录或指定目录的文件结构。',
+  description: '列出目录中的文件和子目录。',
   parameters: {
     path: {
       type: 'string',
-      description: '要列出的目录路径，默认为当前目录',
+      description: '目录路径，默认为当前目录',
       required: false,
     },
   },
-  execute: async (args) => {
-    // TODO: 实现文件列出逻辑
+  execute: async (args, context) => {
+    const targetPath = args.path 
+      ? resolve(context.workDir, args.path as string)
+      : context.workDir;
+    
+    if (!existsSync(targetPath)) {
+      return { error: `目录不存在: ${targetPath}` };
+    }
+
+    const entries = readdirSync(targetPath, { withFileTypes: true });
+    const items = entries.map(e => ({
+      name: e.name,
+      type: e.isDirectory() ? 'directory' : 'file',
+    }));
+
     return {
-      files: ['canon/', 'draft/', 'openwriter.yaml'],
-      path: args.path || '.',
+      path: relative(context.workDir, targetPath) || '.',
+      items,
     };
   },
 };
 
 /**
- * read 工具 - 读取文件
+ * grep - 搜索文件内容
  */
-export const readTool: Tool = {
-  name: 'read',
-  description: '读取指定文件的内容。',
+export const grepTool: Tool = {
+  name: 'grep',
+  description: '在文件中搜索匹配正则表达式的内容。返回匹配的行和文件路径。',
   parameters: {
+    pattern: {
+      type: 'string',
+      description: '正则表达式模式',
+      required: true,
+    },
     path: {
       type: 'string',
-      description: '文件路径',
+      description: '搜索路径，可以是文件或目录',
+      required: false,
+    },
+  },
+  execute: async (args, context) => {
+    const pattern = new RegExp(args.pattern as string, 'g');
+    const searchPath = args.path 
+      ? resolve(context.workDir, args.path as string)
+      : context.workDir;
+
+    const results: Array<{ file: string; line: number; content: string }> = [];
+
+    const searchFile = (filePath: string) => {
+      if (!existsSync(filePath)) return;
+      const content = readFileSync(filePath, 'utf-8');
+      const lines = content.split('\n');
+      lines.forEach((line, i) => {
+        if (pattern.test(line)) {
+          results.push({
+            file: relative(context.workDir, filePath),
+            line: i + 1,
+            content: line.trim(),
+          });
+        }
+        pattern.lastIndex = 0; // 重置正则
+      });
+    };
+
+    const searchDir = (dirPath: string) => {
+      if (!existsSync(dirPath)) return;
+      const entries = readdirSync(dirPath, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = join(dirPath, entry.name);
+        if (entry.isDirectory()) {
+          searchDir(fullPath);
+        } else if (entry.isFile() && !entry.name.startsWith('.')) {
+          searchFile(fullPath);
+        }
+      }
+    };
+
+    if (existsSync(searchPath)) {
+      const stats = statSync(searchPath);
+      if (stats.isDirectory()) {
+        searchDir(searchPath);
+      } else {
+        searchFile(searchPath);
+      }
+    }
+
+    return {
+      pattern: args.pattern,
+      matches: results,
+      count: results.length,
+    };
+  },
+};
+
+/**
+ * execute - 执行 shell 命令
+ */
+export const executeTool: Tool = {
+  name: 'execute',
+  description: '执行 shell 命令。用于运行测试、构建、git 操作等。',
+  parameters: {
+    command: {
+      type: 'string',
+      description: '要执行的命令',
       required: true,
     },
   },
-  execute: async (args) => {
-    // TODO: 实现文件读取逻辑
+  execute: async (args, context) => {
+    try {
+      const output = execSync(args.command as string, {
+        cwd: context.workDir,
+        encoding: 'utf-8',
+        timeout: 30000,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      
+      return {
+        success: true,
+        output,
+        command: args.command,
+      };
+    } catch (err) {
+      const error = err as { stdout?: string; stderr?: string; message?: string };
+      return {
+        success: false,
+        error: error.stderr || error.message,
+        stdout: error.stdout,
+        command: args.command,
+      };
+    }
+  },
+};
+
+/**
+ * glob - 按模式查找文件
+ */
+export const globTool: Tool = {
+  name: 'glob',
+  description: '按通配符模式查找文件。例如 "*.md" 查找所有 markdown 文件。',
+  parameters: {
+    pattern: {
+      type: 'string',
+      description: '通配符模式，如 "*.md", "draft/**\/*.md"',
+      required: true,
+    },
+    path: {
+      type: 'string',
+      description: '搜索起始目录',
+      required: false,
+    },
+  },
+  execute: async (args, context) => {
+    const basePath = args.path 
+      ? resolve(context.workDir, args.path as string)
+      : context.workDir;
+    
+    const pattern = args.pattern as string;
+    const files: string[] = [];
+
+    const matchPattern = (fileName: string) => {
+      // 简单通配符匹配
+      const regex = new RegExp(
+        pattern
+          .replace(/\*\*/g, '.*')
+          .replace(/\*/g, '[^\\/]*')
+          .replace(/\./g, '\\.')
+      );
+      return regex.test(fileName);
+    };
+
+    const walk = (dir: string) => {
+      if (!existsSync(dir)) return;
+      const entries = readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = join(dir, entry.name);
+        const relPath = relative(context.workDir, fullPath);
+        if (entry.isDirectory()) {
+          walk(fullPath);
+        } else if (matchPattern(relPath) || matchPattern(entry.name)) {
+          files.push(relPath);
+        }
+      }
+    };
+
+    walk(basePath);
+
     return {
-      content: '文件内容...',
-      path: args.path,
+      pattern,
+      files,
+      count: files.length,
     };
   },
 };
 
 /**
- * cd 工具 - 切换目录
+ * cd - 切换工作目录
  */
 export const cdTool: Tool = {
   name: 'cd',
@@ -255,37 +348,111 @@ export const cdTool: Tool = {
       required: true,
     },
   },
-  execute: async (args) => {
+  execute: async (args, context) => {
+    const targetPath = resolve(context.workDir, args.path as string);
+    
+    if (!existsSync(targetPath)) {
+      return { error: `目录不存在: ${args.path}` };
+    }
+
+    setWorkDir(targetPath);
+    
     return {
-      currentDir: args.path,
-      message: `已切换到 ${args.path}`,
+      success: true,
+      workDir: targetPath,
     };
   },
 };
 
 /**
- * help 工具 - 显示帮助
+ * pwd - 显示当前目录
  */
-export const helpTool: Tool = {
-  name: 'help',
-  description: '显示使用帮助和可用工具列表。',
+export const pwdTool: Tool = {
+  name: 'pwd',
+  description: '显示当前工作目录。',
   parameters: {},
-  execute: async () => {
+  execute: async (_, context) => {
     return {
-      message: `
-OpenWriter 使用指南
+      workDir: context.workDir,
+    };
+  },
+};
 
-你可以用自然语言描述你的需求，我会理解你的意图并执行相应操作。
+/**
+ * create_directory - 创建目录
+ */
+export const createDirectoryTool: Tool = {
+  name: 'create_directory',
+  description: '创建新目录。如果父目录不存在会一并创建。',
+  parameters: {
+    path: {
+      type: 'string',
+      description: '要创建的目录路径',
+      required: true,
+    },
+  },
+  execute: async (args, context) => {
+    const dirPath = resolve(context.workDir, args.path as string);
+    
+    if (existsSync(dirPath)) {
+      return { message: `目录已存在: ${args.path}` };
+    }
 
-常见需求示例:
-- "帮我写一个神秘老人出现的场景"
-- "检查一下第一章有没有逻辑漏洞"
-- "我想给反派角色设计一个更复杂的动机"
-- "润色这段对话，让它更生动"
+    mkdirSync(dirPath, { recursive: true });
+    
+    return {
+      success: true,
+      path: args.path,
+      message: `已创建目录: ${args.path}`,
+    };
+  },
+};
 
-直接输入你想做的事情，我会帮你完成。
-`,
-      tools: TOOLS.map(t => ({ name: t.name, description: t.description })),
+/**
+ * edit_file - 编辑文件（替换内容）
+ */
+export const editFileTool: Tool = {
+  name: 'edit_file',
+  description: '编辑文件，替换指定内容。用于修改现有文件。',
+  parameters: {
+    path: {
+      type: 'string',
+      description: '文件路径',
+      required: true,
+    },
+    old_text: {
+      type: 'string',
+      description: '要替换的原始文本',
+      required: true,
+    },
+    new_text: {
+      type: 'string',
+      description: '替换后的新文本',
+      required: true,
+    },
+  },
+  execute: async (args, context) => {
+    const filePath = resolve(context.workDir, args.path as string);
+    
+    if (!existsSync(filePath)) {
+      return { error: `文件不存在: ${args.path}` };
+    }
+
+    const content = readFileSync(filePath, 'utf-8');
+    const oldText = args.old_text as string;
+    const newText = args.new_text as string;
+
+    if (!content.includes(oldText)) {
+      return { error: `未找到要替换的内容` };
+    }
+
+    const newContent = content.replace(oldText, newText);
+    writeFileSync(filePath, newContent, 'utf-8');
+
+    return {
+      success: true,
+      path: args.path,
+      message: `已编辑 ${args.path}`,
     };
   },
 };
@@ -293,13 +460,14 @@ OpenWriter 使用指南
 // ==================== Tools 注册 ====================
 
 export const TOOLS: Tool[] = [
-  initTool,
-  writeTool,
-  reviseTool,
-  checkTool,
-  brainstormTool,
+  readFileTool,
+  writeFileTool,
+  editFileTool,
   lsTool,
-  readTool,
+  grepTool,
+  globTool,
+  executeTool,
   cdTool,
-  helpTool,
+  pwdTool,
+  createDirectoryTool,
 ];

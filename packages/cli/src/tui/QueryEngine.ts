@@ -6,7 +6,7 @@
  */
 
 import type { ChatMessage, SupportedModel } from './types.js';
-import { TOOLS, type Tool, type ToolCall, type ToolResult } from './tools.js';
+import { TOOLS, type Tool, type ToolCall, type ToolResult, getContext } from './tools.js';
 import { ProviderManager, type ChatRequest } from './provider.js';
 
 export interface QueryEngineConfig {
@@ -135,7 +135,7 @@ export class QueryEngine {
     }
 
     try {
-      const result = await tool.execute(toolCall.args);
+      const result = await tool.execute(toolCall.args, getContext());
       return {
         success: true,
         content: result,
