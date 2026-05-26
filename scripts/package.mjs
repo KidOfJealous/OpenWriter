@@ -127,10 +127,36 @@ async function copyExternalPackage(packageName, packageDir) {
   if (!existsSync(sourceDir)) {
     throw new Error(`Missing dependency ${packageName}. Run npm install first.`);
   }
-  await cp(sourceDir, join(packageDir, 'node_modules', packageName), {
+  
+  // Copy the package itself
+  const targetDir = join(packageDir, 'node_modules', packageName);
+  await cp(sourceDir, targetDir, {
     recursive: true,
-    filter: source => !source.includes(`${packageName}${sep()}node_modules${sep()}.cache`),
+    filter: source => {
+      // Skip nested node_modules - we'll handle dependencies separately
+      if (source.includes(`${packageName}${sep()}node_modules${sep()}`)) {
+        return false;
+      }
+      // Skip cache directories
+      if (source.includes('.cache')) {
+        return false;
+      }
+      return true;
+    },
   });
+  
+  // Recursively copy dependencies
+  const pkgJsonPath = join(sourceDir, 'package.json');
+  if (existsSync(pkgJsonPath)) {
+    const pkgJson = JSON.parse(await readFile(pkgJsonPath, 'utf-8'));
+    const deps = Object.keys(pkgJson.dependencies || {});
+    for (const dep of deps) {
+      const depTargetDir = join(packageDir, 'node_modules', dep);
+      if (!existsSync(depTargetDir)) {
+        await copyExternalPackage(dep, packageDir);
+      }
+    }
+  }
 }
 
 async function writeLauncher(packageDir, platform) {
