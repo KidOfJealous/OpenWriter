@@ -9,6 +9,7 @@ import type {
 } from './types.js';
 import { AggressiveCacheManager } from './cache.js';
 import { WORKFLOWS, resolveWorkflowOrder } from './workflow.js';
+import { planAgentLoop } from './agent-loop.js';
 
 export class Orchestrator {
   private agents = new Map<string, WritingAgent>();
@@ -33,7 +34,7 @@ export class Orchestrator {
     const workflow = WORKFLOWS[workflowName];
     if (!workflow) throw new Error(`Unknown workflow: ${workflowName}`);
 
-    return this.executePipeline(workflow, context, options);
+    return this.executePipeline(planAgentLoop(workflowName, context).steps, context, options);
   }
 
   async executeCustomPipeline(
@@ -53,10 +54,11 @@ export class Orchestrator {
     const results: Record<string, AgentResult> = {};
     const cachePolicy = this.resolveCachePolicy(initialContext, options);
     const cache = new AggressiveCacheManager(cachePolicy);
+    const observer = options?.observer;
     let workingContext = cache.stabilizeContextPacket(initialContext);
     cache.prime(workingContext);
 
-    for (const agentName of order) {
+    for (const [index, agentName] of order.entries()) {
       const agent = this.agents.get(agentName);
       if (!agent) throw new Error(`Agent not registered: ${agentName}`);
 
@@ -66,13 +68,44 @@ export class Orchestrator {
         : workingContext;
       const context = cache.prepareForAgent(baseContext);
 
-      console.log(`[Orchestrator] Running: ${agentName}`);
-      const result = await agent.execute(context, options);
+      if (!options?.quiet) {
+        console.log(`[Orchestrator] Running: ${agentName}`);
+      }
+      observer?.onAgentStart?.({
+        agent: agentName,
+        index,
+        total: order.length,
+        context,
+      });
+
+      const startedAt = Date.now();
+      let result: AgentResult;
+      try {
+        result = await agent.execute(context, options);
+      } catch (error) {
+        observer?.onAgentError?.({
+          agent: agentName,
+          index,
+          total: order.length,
+          context,
+          durationMs: Date.now() - startedAt,
+          error,
+        });
+        throw error;
+      }
       cache.appendResult(agentName, result);
       result.metadata = {
         ...result.metadata,
         cache: cache.getSnapshot(context),
       };
+      observer?.onAgentComplete?.({
+        agent: agentName,
+        index,
+        total: order.length,
+        context,
+        result,
+        durationMs: Date.now() - startedAt,
+      });
       results[agentName] = result;
 
       const packet = this.extractContextPacket(result);

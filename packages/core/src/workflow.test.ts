@@ -1,22 +1,38 @@
 import { describe, it, expect } from 'vitest';
-import { resolveWorkflowOrder, WORKFLOWS } from '../src/workflow';
+import { planAgentLoop, resolveWorkflowOrder, WORKFLOWS } from '../src';
+import type { WritingContextPacket } from '../src';
+
+const context = (task: string): WritingContextPacket => ({
+  task,
+  projectProfile: {
+    name: 'test',
+    language: 'zh-CN',
+    genre: 'fantasy',
+    sourceOfTruth: [],
+    draftDirs: [],
+  },
+  relevantCanon: [],
+  relevantDrafts: [],
+  deprecatedItems: [],
+  openQuestions: [],
+  constraints: [],
+});
 
 describe('workflow', () => {
   it('resolves workflow order correctly', () => {
     const order = resolveWorkflowOrder(WORKFLOWS.chapterWriting);
-    expect(order[0]).toBe('context-retriever');
-    expect(order.indexOf('prose-writer')).toBeGreaterThan(order.indexOf('context-retriever'));
-    expect(order.indexOf('continuity-checker')).toBeGreaterThan(order.indexOf('prose-writer'));
+    expect(order).toEqual(['context-retriever', 'prose-writer', 'continuity-checker']);
   });
 
-  it('handles diamond dependencies', () => {
-    // brainstorm has critic depending on 3 agents all depending on context-retriever
-    const order = resolveWorkflowOrder(WORKFLOWS.brainstorm);
-    expect(order[0]).toBe('context-retriever');
-    expect(order[order.length - 1]).toBe('critic');
-    expect(order).toContain('plot-architect');
-    expect(order).toContain('character-agent');
-    expect(order).toContain('worldbuilding-agent');
+  it('keeps static fallback workflows narrow', () => {
+    expect(resolveWorkflowOrder(WORKFLOWS.brainstorm)).toEqual([
+      'context-retriever',
+      'plot-architect',
+    ]);
+    expect(resolveWorkflowOrder(WORKFLOWS.continuityCheck)).toEqual([
+      'context-retriever',
+      'continuity-checker',
+    ]);
   });
 
   it('has all 5 workflow types defined', () => {
@@ -27,5 +43,31 @@ describe('workflow', () => {
       'polish',
       'continuityCheck',
     ]);
+  });
+
+  it('plans a chapter-writing loop without broad specialist fan-out', () => {
+    const plan = planAgentLoop('chapterWriting', context('write the next scene'));
+    expect(plan.steps.map(step => step.agent)).toEqual([
+      'context-retriever',
+      'prose-writer',
+      'continuity-checker',
+    ]);
+    expect(plan.skippedAgents).toContain('character-agent');
+    expect(plan.skippedAgents).toContain('worldbuilding-agent');
+  });
+
+  it('selects focused specialists when the task asks for them', () => {
+    const plan = planAgentLoop(
+      'brainstorm',
+      context('brainstorm character motivation and worldbuilding rules'),
+      { maxSpecialists: 2 },
+    );
+
+    expect(plan.steps.map(step => step.agent)).toEqual([
+      'context-retriever',
+      'character-agent',
+      'worldbuilding-agent',
+    ]);
+    expect(plan.skippedAgents).toContain('plot-architect');
   });
 });

@@ -1,162 +1,360 @@
-import React, { useState, useEffect } from 'react';
-import { Box, Text } from 'ink';
+import React, { useState } from 'react';
+import { Box, Text, useInput } from 'ink';
 import TextInput from 'ink-text-input';
-import { MODEL_CONFIGS, type SupportedModel } from './types.js';
+import {
+  MODEL_PROVIDERS,
+  type ModelProviderPreset,
+  type ModelRuntimeConfig,
+  type ProviderModel,
+} from './types.js';
 
 interface ModelConfigProps {
-  onConfig: (model: string, apiKey: string) => void;
+  onConfig: (config: ModelRuntimeConfig) => void;
 }
 
+type FocusPane = 'providers' | 'models';
+type PromptStep = 'picker' | 'apiKey' | 'customModel' | 'customBaseUrl' | 'customApiKey';
+
 export function ModelConfig({ onConfig }: ModelConfigProps) {
-  const [step, setStep] = useState<'select' | 'apikey' | 'confirm'>('select');
-  const [selectedModel, setSelectedModel] = useState<SupportedModel | null>(null);
+  const [step, setStep] = useState<PromptStep>('picker');
+  const [focus, setFocus] = useState<FocusPane>('providers');
+  const [providerIndex, setProviderIndex] = useState(0);
+  const [modelIndex, setModelIndex] = useState(0);
   const [apiKey, setApiKey] = useState('');
-  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [customModel, setCustomModel] = useState('');
+  const [customBaseUrl, setCustomBaseUrl] = useState('');
+  const [customApiKey, setCustomApiKey] = useState('');
   const [error, setError] = useState<string | null>(null);
 
-  const models = Object.keys(MODEL_CONFIGS) as SupportedModel[];
+  const provider = MODEL_PROVIDERS[providerIndex];
+  const selectedModel = provider.models[Math.min(modelIndex, provider.models.length - 1)];
 
-  // Check for existing env keys
-  useEffect(() => {
-    // Auto-select if API key already exists in env
-    for (const model of models) {
-      const config = MODEL_CONFIGS[model];
-      if (process.env[config.envKey]) {
-        setSelectedModel(model);
-        setApiKey(process.env[config.envKey] || '');
-        setStep('confirm');
-        return;
-      }
-    }
-  }, []);
+  useInput((input, key) => {
+    if (step !== 'picker') return;
 
-  // Keyboard navigation for model selection
-  useEffect(() => {
-    if (step !== 'select') return;
-    
-    const handleInput = (input: string) => {
-      if (input === '\x1b[A' || input === 'k') { // Up
-        setSelectedIndex(prev => (prev - 1 + models.length) % models.length);
-      } else if (input === '\x1b[B' || input === 'j') { // Down
-        setSelectedIndex(prev => (prev + 1) % models.length);
-      } else if (input === '\r') { // Enter
-        setSelectedModel(models[selectedIndex]);
-        setStep('apikey');
-      }
-    };
-
-    // Note: In ink we use useInput hook, but this is simplified
-  }, [step, selectedIndex, models]);
-
-  const handleApiKeySubmit = () => {
-    if (!apiKey.trim()) {
-      setError('请输入 API Key');
+    if (key.tab || key.leftArrow || key.rightArrow) {
+      setFocus(prev => prev === 'providers' ? 'models' : 'providers');
+      setError(null);
       return;
     }
-    setStep('confirm');
-  };
 
-  const handleConfirm = () => {
-    if (selectedModel && apiKey) {
-      // Save to env for this session
-      const config = MODEL_CONFIGS[selectedModel];
-      process.env[config.envKey] = apiKey;
-      onConfig(selectedModel, apiKey);
+    if (key.upArrow || input === 'k') {
+      if (focus === 'providers') {
+        setProviderIndex(prev => {
+          const next = (prev - 1 + MODEL_PROVIDERS.length) % MODEL_PROVIDERS.length;
+          setModelIndex(0);
+          return next;
+        });
+      } else {
+        setModelIndex(prev => (prev - 1 + provider.models.length) % provider.models.length);
+      }
+      setError(null);
+      return;
     }
+
+    if (key.downArrow || input === 'j') {
+      if (focus === 'providers') {
+        setProviderIndex(prev => {
+          const next = (prev + 1) % MODEL_PROVIDERS.length;
+          setModelIndex(0);
+          return next;
+        });
+      } else {
+        setModelIndex(prev => (prev + 1) % provider.models.length);
+      }
+      setError(null);
+      return;
+    }
+
+    if (key.return) {
+      if (focus === 'providers') {
+        setFocus('models');
+        setError(null);
+      } else {
+        chooseModel(provider, selectedModel);
+      }
+    }
+  });
+
+  const chooseModel = (selectedProvider: ModelProviderPreset, model: ProviderModel) => {
+    if (selectedProvider.custom) {
+      setCustomModel('');
+      setCustomBaseUrl('');
+      setCustomApiKey('');
+      setStep('customModel');
+      return;
+    }
+
+    const envValue = selectedProvider.envKey ? process.env[selectedProvider.envKey] : undefined;
+    if (selectedProvider.apiKeyRequired && !envValue) {
+      setApiKey('');
+      setStep('apiKey');
+      return;
+    }
+
+    applyConfig(selectedProvider, model.id, envValue);
   };
 
-  // Select model step
-  if (step === 'select') {
+  const applyConfig = (selectedProvider: ModelProviderPreset, model: string, key?: string) => {
+    if (selectedProvider.envKey && key) {
+      process.env[selectedProvider.envKey] = key;
+    }
+
+    onConfig({
+      provider: selectedProvider.provider,
+      model,
+      baseUrl: selectedProvider.baseUrl,
+      apiKey: key,
+      envKey: selectedProvider.envKey,
+      displayName: `${selectedProvider.name} / ${model}`,
+    });
+  };
+
+  if (step === 'apiKey') {
     return (
-      <Box flexDirection="column">
-        <Box borderStyle="round" borderColor="cyan" paddingX={1}>
-          <Text bold color="cyan">OpenWriter 配置</Text>
-        </Box>
-        
-        <Box marginTop={1}>
-          <Text>选择模型 (↑/↓ 或 j/k 选择，Enter 确认):</Text>
-        </Box>
-
-        {models.map((model, index) => (
-          <Box key={model} marginLeft={1}>
-            <Text color={index === selectedIndex ? 'cyan' : 'gray'}>
-              {index === selectedIndex ? '▸ ' : '  '}
-              {MODEL_CONFIGS[model].name}
-            </Text>
-            {process.env[MODEL_CONFIGS[model].envKey] && (
-              <Text dimColor> (已有 API Key)</Text>
-            )}
-          </Box>
-        ))}
-
-        <Box marginTop={1}>
-          <Text dimColor>推荐: DeepSeek Chat (性价比高)</Text>
-        </Box>
-      </Box>
+      <PromptInput
+        title={`${provider.name} API Key`}
+        label={`Env var: ${provider.envKey}`}
+        value={apiKey}
+        onChange={value => {
+          setApiKey(value);
+          setError(null);
+        }}
+        onSubmit={() => {
+          const key = apiKey.trim();
+          if (!key) {
+            setError(`Paste a key or set ${provider.envKey}.`);
+            return;
+          }
+          applyConfig(provider, selectedModel.id, key);
+        }}
+        placeholder="Paste API key..."
+        error={error}
+        mask
+      />
     );
   }
 
-  // API Key input step
-  if (step === 'apikey' && selectedModel) {
-    const config = MODEL_CONFIGS[selectedModel];
+  if (step === 'customModel') {
     return (
-      <Box flexDirection="column">
-        <Box borderStyle="round" borderColor="cyan" paddingX={1}>
-          <Text bold color="cyan">配置 {config.name}</Text>
+      <PromptInput
+        title="Custom Model"
+        label="Model ID"
+        value={customModel}
+        onChange={value => {
+          setCustomModel(value);
+          setError(null);
+        }}
+        onSubmit={() => {
+          if (!customModel.trim()) {
+            setError('Enter a model id.');
+            return;
+          }
+          setStep('customBaseUrl');
+        }}
+        placeholder="model-id"
+        error={error}
+      />
+    );
+  }
+
+  if (step === 'customBaseUrl') {
+    return (
+      <PromptInput
+        title="Custom Base URL"
+        label="OpenAI-compatible base URL"
+        value={customBaseUrl}
+        onChange={value => {
+          setCustomBaseUrl(value);
+          setError(null);
+        }}
+        onSubmit={() => {
+          const cleaned = customBaseUrl.trim().replace(/\/+$/, '');
+          if (!/^https?:\/\//i.test(cleaned)) {
+            setError('Base URL must start with http:// or https://.');
+            return;
+          }
+          setCustomBaseUrl(cleaned);
+          setStep('customApiKey');
+        }}
+        placeholder="https://api.example.com"
+        error={error}
+      />
+    );
+  }
+
+  if (step === 'customApiKey') {
+    return (
+      <PromptInput
+        title="Custom API Key"
+        label="API key"
+        value={customApiKey}
+        onChange={value => {
+          setCustomApiKey(value);
+          setError(null);
+        }}
+        onSubmit={() => {
+          const model = customModel.trim();
+          const baseUrl = customBaseUrl.trim().replace(/\/+$/, '');
+          const key = customApiKey.trim();
+          if (!key) {
+            setError('Paste an API key.');
+            return;
+          }
+          process.env.OPENAI_API_KEY = key;
+          onConfig({
+            provider: 'openai-compatible',
+            model,
+            baseUrl,
+            apiKey: key,
+            envKey: 'OPENAI_API_KEY',
+            displayName: `Custom / ${model}`,
+          });
+        }}
+        placeholder="Paste API key..."
+        error={error}
+        mask
+      />
+    );
+  }
+
+  return (
+    <Box flexDirection="column">
+      <Box borderStyle="round" borderColor="cyan" paddingX={1}>
+        <Text bold color="cyan">Model Picker</Text>
+        <Text dimColor>{'  Provider -> model. Custom handles base URL.'}</Text>
+      </Box>
+
+      <Box marginTop={1} flexDirection="row">
+        <Box borderStyle="round" borderColor={focus === 'providers' ? 'cyan' : 'gray'} paddingX={1} width="42%" flexDirection="column">
+          <Text bold color={focus === 'providers' ? 'cyan' : 'white'}>Providers</Text>
+          {MODEL_PROVIDERS.map((item, index) => (
+            <ProviderRow
+              key={item.id}
+              provider={item}
+              selected={index === providerIndex}
+              focused={focus === 'providers'}
+            />
+          ))}
         </Box>
 
-        <Box marginTop={1}>
-          <Text>模型: {config.name}</Text>
+        <Box borderStyle="round" borderColor={focus === 'models' ? 'cyan' : 'gray'} paddingX={1} marginLeft={1} width="58%" flexDirection="column">
+          <Text bold color={focus === 'models' ? 'cyan' : 'white'}>Models</Text>
+          {provider.models.map((model, index) => (
+            <ModelRow
+              key={model.id}
+              model={model}
+              selected={index === modelIndex}
+              focused={focus === 'models'}
+            />
+          ))}
         </Box>
-        
-        <Box marginTop={1}>
-          <Text>请输入 API Key:</Text>
-        </Box>
-        
-        <Box borderStyle="single" borderColor="cyan" paddingX={1} marginTop={1}>
-          <TextInput
-            value={apiKey}
-            onChange={setApiKey}
-            onSubmit={handleApiKeySubmit}
-            placeholder={`输入 ${config.envKey}...`}
-          />
-        </Box>
+      </Box>
 
-        {error && (
-          <Box marginTop={1}>
-            <Text color="red">{error}</Text>
-          </Box>
+      <Box marginTop={1} flexDirection="column">
+        <Text dimColor>{provider.description}</Text>
+        {provider.custom ? (
+          <Text dimColor>Custom is the only path that asks for base URL.</Text>
+        ) : (
+          <Text dimColor>
+            {provider.apiKeyRequired
+              ? `API key: ${provider.envKey}${envKeyValue(provider) ? ' found' : ' will be requested'}`
+              : 'No API key required.'}
+          </Text>
         )}
-
-        <Box marginTop={1}>
-          <Text dimColor>获取 API Key: {config.baseUrl}</Text>
-        </Box>
+        {error ? <Text color="red">{error}</Text> : <Text dimColor>Tab switches pane, Enter selects, Up/Down or j/k moves.</Text>}
       </Box>
-    );
-  }
+    </Box>
+  );
+}
 
-  // Confirm step
-  if (step === 'confirm' && selectedModel) {
-    return (
-      <Box flexDirection="column">
-        <Box borderStyle="round" borderColor="green" paddingX={1}>
-          <Text bold color="green">配置确认</Text>
-        </Box>
+function ProviderRow({
+  provider,
+  selected,
+  focused,
+}: {
+  provider: ModelProviderPreset;
+  selected: boolean;
+  focused: boolean;
+}) {
+  const color = selected && focused ? 'cyan' : selected ? 'white' : 'gray';
+  const envOk = provider.envKey && process.env[provider.envKey];
 
-        <Box marginTop={1}>
-          <Text>模型: {MODEL_CONFIGS[selectedModel].name}</Text>
-        </Box>
-        
-        <Box marginTop={1}>
-          <Text dimColor>API Key: {apiKey.slice(0, 8)}...{apiKey.slice(-4)}</Text>
-        </Box>
+  return (
+    <Box>
+      <Text color={color}>{selected && focused ? '> ' : '  '}{provider.name}</Text>
+      {envOk ? <Text color="green"> env</Text> : null}
+    </Box>
+  );
+}
 
-        <Box marginTop={1}>
-          <Text color="cyan">按 Enter 开始使用</Text>
-        </Box>
+function ModelRow({
+  model,
+  selected,
+  focused,
+}: {
+  model: ProviderModel;
+  selected: boolean;
+  focused: boolean;
+}) {
+  const color = selected && focused ? 'cyan' : selected ? 'white' : 'gray';
+
+  return (
+    <Box>
+      <Text color={color}>{selected && focused ? '> ' : '  '}{model.name}</Text>
+      <Text dimColor>  {model.id}</Text>
+    </Box>
+  );
+}
+
+function PromptInput({
+  title,
+  label,
+  value,
+  onChange,
+  onSubmit,
+  placeholder,
+  error,
+  mask = false,
+}: {
+  title: string;
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  onSubmit: () => void;
+  placeholder: string;
+  error: string | null;
+  mask?: boolean;
+}) {
+  return (
+    <Box flexDirection="column">
+      <Box borderStyle="round" borderColor="cyan" paddingX={1}>
+        <Text bold color="cyan">{title}</Text>
       </Box>
-    );
-  }
 
-  return null;
+      <Box marginTop={1}>
+        <Text>{label}</Text>
+      </Box>
+
+      <Box borderStyle="single" borderColor={error ? 'red' : 'cyan'} paddingX={1} marginTop={1}>
+        <TextInput
+          value={value}
+          onChange={onChange}
+          onSubmit={onSubmit}
+          placeholder={placeholder}
+          mask={mask ? '*' : undefined}
+        />
+      </Box>
+
+      {error && (
+        <Box marginTop={1}>
+          <Text color="red">{error}</Text>
+        </Box>
+      )}
+    </Box>
+  );
+}
+
+function envKeyValue(provider: ModelProviderPreset): string {
+  return provider.envKey ? process.env[provider.envKey] ?? '' : '';
 }

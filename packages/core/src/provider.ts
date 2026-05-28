@@ -184,6 +184,7 @@ export function createProvider(name: string, config?: Partial<ProviderConfig>): 
     case 'deepseek':
       return new DeepSeekProvider();
     case 'openai':
+    case 'openai-compatible':
       return new OpenAIProvider();
     case 'ollama':
       return new OllamaProvider();

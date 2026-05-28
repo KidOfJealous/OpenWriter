@@ -42,7 +42,8 @@ describe('orchestrator', () => {
     const results = await orch.executeWorkflow('brainstorm', mockContext);
     expect(results['context-retriever']).toBeDefined();
     expect(results['context-retriever'].content).toBe('retrieved');
-    expect(results['critic']).toBeDefined();
+    expect(results['plot-architect']).toBeDefined();
+    expect(results['critic']).toBeUndefined();
   });
 
   it('throws on unknown workflow', async () => {
@@ -123,5 +124,25 @@ describe('orchestrator', () => {
       content: 'generated chapter',
     });
     expect(seenContext?.workflowLog?.[0].agent).toBe('prose-writer');
+  });
+
+  it('emits workflow observer events for agent progress', async () => {
+    const orch = new Orchestrator();
+    const events: string[] = [];
+    orch.register(createMockAgent('prose-writer', { type: 'text', content: 'draft' }));
+
+    await orch.executeCustomPipeline(
+      [{ agent: 'prose-writer' }],
+      mockContext,
+      {
+        quiet: true,
+        observer: {
+          onAgentStart: event => events.push(`start:${event.agent}:${event.index}/${event.total}`),
+          onAgentComplete: event => events.push(`done:${event.agent}:${event.result?.type}`),
+        },
+      },
+    );
+
+    expect(events).toEqual(['start:prose-writer:0/1', 'done:prose-writer:text']);
   });
 });

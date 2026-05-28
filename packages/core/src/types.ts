@@ -116,7 +116,25 @@ export interface AgentOptions {
   model?: string;
   temperature?: number;
   maxTokens?: number;
+  quiet?: boolean;
+  observer?: WorkflowObserver;
   [key: string]: unknown;
+}
+
+export interface WorkflowAgentEvent {
+  agent: string;
+  index: number;
+  total: number;
+  context?: WritingContextPacket;
+  result?: AgentResult;
+  durationMs?: number;
+  error?: unknown;
+}
+
+export interface WorkflowObserver {
+  onAgentStart?: (event: WorkflowAgentEvent) => void;
+  onAgentComplete?: (event: WorkflowAgentEvent) => void;
+  onAgentError?: (event: WorkflowAgentEvent) => void;
 }
 
 export interface WritingAgent {
@@ -134,6 +152,29 @@ export interface WorkflowStep {
 }
 
 export type WorkflowName = 'brainstorm' | 'setting' | 'chapterWriting' | 'polish' | 'continuityCheck';
+
+export type AgentLoopPhase = 'observe' | 'plan' | 'act' | 'verify' | 'summarize';
+
+export type AgentLoopRole = 'lead' | 'specialist' | 'reviewer' | 'memory';
+
+export interface AgentLoopStep extends WorkflowStep {
+  phase: AgentLoopPhase;
+  role: AgentLoopRole;
+  reason: string;
+}
+
+export interface AgentLoopPlan {
+  workflow: WorkflowName;
+  task: string;
+  label: string;
+  steps: AgentLoopStep[];
+  rationale: string[];
+  skippedAgents: string[];
+}
+
+export interface AgentLoopPlanningOptions {
+  maxSpecialists?: number;
+}
 
 // LLM Provider
 

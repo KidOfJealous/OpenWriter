@@ -13,26 +13,27 @@ export function DirectorySelector({ onSelect, currentDir }: DirectorySelectorPro
   const [mode, setMode] = useState<'browse' | 'input'>('browse');
   const [inputDir, setInputDir] = useState(currentDir);
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [error, setError] = useState<string | null>(null);
 
-  // 常用目录选项
   const suggestions = [
-    { path: currentDir, label: '当前目录' },
-    { path: resolve(currentDir, '..'), label: '上级目录' },
-    { path: resolve(currentDir, 'projects'), label: 'projects 子目录' },
-    { path: resolve(currentDir, 'writing'), label: 'writing 子目录' },
+    { path: currentDir, label: 'current directory' },
+    { path: resolve(currentDir, '..'), label: 'parent directory' },
+    { path: resolve(currentDir, 'projects'), label: 'projects subdirectory' },
+    { path: resolve(currentDir, 'writing'), label: 'writing subdirectory' },
   ];
 
   useInput((input, key) => {
-    if (mode === 'browse') {
-      if (key.upArrow) {
-        setSelectedIndex(prev => (prev - 1 + suggestions.length) % suggestions.length);
-      } else if (key.downArrow) {
-        setSelectedIndex(prev => (prev + 1) % suggestions.length);
-      } else if (key.return) {
-        onSelect(suggestions[selectedIndex].path);
-      } else if (input === 'i' || input === 'I') {
-        setMode('input');
-      }
+    if (mode !== 'browse') return;
+
+    if (key.upArrow || input === 'k') {
+      setSelectedIndex(prev => (prev - 1 + suggestions.length) % suggestions.length);
+    } else if (key.downArrow || input === 'j') {
+      setSelectedIndex(prev => (prev + 1) % suggestions.length);
+    } else if (key.return) {
+      onSelect(suggestions[selectedIndex].path);
+    } else if (input === 'i' || input === 'I') {
+      setMode('input');
+      setError(null);
     }
   });
 
@@ -40,28 +41,39 @@ export function DirectorySelector({ onSelect, currentDir }: DirectorySelectorPro
     return (
       <Box flexDirection="column">
         <Box borderStyle="round" borderColor="cyan" paddingX={1}>
-          <Text bold color="cyan">选择工作目录</Text>
+          <Text bold color="cyan">Choose Workspace</Text>
         </Box>
-        
+
         <Box marginTop={1}>
-          <Text>输入目录路径:</Text>
+          <Text>Enter directory path:</Text>
         </Box>
-        
-        <Box borderStyle="single" borderColor="cyan" paddingX={1} marginTop={1}>
+
+        <Box borderStyle="single" borderColor={error ? 'red' : 'cyan'} paddingX={1} marginTop={1}>
           <TextInput
             value={inputDir}
-            onChange={setInputDir}
+            onChange={value => {
+              setInputDir(value);
+              setError(null);
+            }}
             onSubmit={() => {
               if (existsSync(inputDir)) {
                 onSelect(inputDir);
+              } else {
+                setError(`Directory not found: ${inputDir}`);
               }
             }}
-            placeholder="输入目录路径..."
+            placeholder="Enter directory path..."
           />
         </Box>
-        
+
+        {error && (
+          <Box marginTop={1}>
+            <Text color="red">{error}</Text>
+          </Box>
+        )}
+
         <Box marginTop={1}>
-          <Text dimColor>Enter 确认 | ESC 返回浏览</Text>
+          <Text dimColor>Enter to confirm</Text>
         </Box>
       </Box>
     );
@@ -70,25 +82,25 @@ export function DirectorySelector({ onSelect, currentDir }: DirectorySelectorPro
   return (
     <Box flexDirection="column">
       <Box borderStyle="round" borderColor="cyan" paddingX={1}>
-        <Text bold color="cyan">选择工作目录</Text>
-      </Box>
-      
-      <Box marginTop={1}>
-        <Text>选择目录 (↑/↓ 选择，Enter 确认，i 手动输入):</Text>
+        <Text bold color="cyan">Choose Workspace</Text>
       </Box>
 
-      {suggestions.map((s, index) => (
-        <Box key={s.path} marginLeft={1}>
+      <Box marginTop={1}>
+        <Text>Select directory: Up/Down or j/k, Enter to confirm, i to type a path</Text>
+      </Box>
+
+      {suggestions.map((item, index) => (
+        <Box key={item.path} marginLeft={1}>
           <Text color={index === selectedIndex ? 'cyan' : 'gray'}>
-            {index === selectedIndex ? '▸ ' : '  '}
-            {s.label}
+            {index === selectedIndex ? '> ' : '  '}
+            {item.label}
           </Text>
-          <Text dimColor> - {s.path}</Text>
+          <Text dimColor> - {item.path}</Text>
         </Box>
       ))}
 
       <Box marginTop={1}>
-        <Text dimColor>或者按 'i' 手动输入路径</Text>
+        <Text dimColor>Press i to manually enter a workspace path.</Text>
       </Box>
     </Box>
   );

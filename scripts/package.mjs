@@ -341,12 +341,17 @@ function run(command, args, cwd) {
 }
 
 function runPackageBuild() {
+  if (process.platform === 'win32') {
+    run('cmd.exe', ['/d', '/s', '/c', 'npm.cmd run build'], rootDir);
+    return;
+  }
+
   if (process.env.npm_execpath) {
     run(process.execPath, [process.env.npm_execpath, 'run', 'build'], rootDir);
     return;
   }
 
-  run(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build'], rootDir);
+  run('npm', ['run', 'build'], rootDir);
 }
 
 function runPowerShell(args, cwd) {
