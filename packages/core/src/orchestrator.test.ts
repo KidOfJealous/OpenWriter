@@ -145,4 +145,38 @@ describe('orchestrator', () => {
 
     expect(events).toEqual(['start:prose-writer:0/1', 'done:prose-writer:text']);
   });
+
+  it('passes per-agent model overrides to agents', async () => {
+    const orch = new Orchestrator();
+    const seenModels: Record<string, string | undefined> = {};
+    for (const agentName of ['prose-writer', 'continuity-checker']) {
+      orch.register({
+        name: agentName,
+        description: `captures ${agentName} model`,
+        execute: async (_context, options) => {
+          seenModels[agentName] = options?.model;
+          return { type: 'text', content: agentName };
+        },
+      });
+    }
+
+    await orch.executeCustomPipeline(
+      [
+        { agent: 'prose-writer' },
+        { agent: 'continuity-checker', dependsOn: ['prose-writer'] },
+      ],
+      mockContext,
+      {
+        model: 'deepseek-chat',
+        agentModels: {
+          'continuity-checker': 'deepseek-v4-flash',
+        },
+      },
+    );
+
+    expect(seenModels).toEqual({
+      'prose-writer': 'deepseek-chat',
+      'continuity-checker': 'deepseek-v4-flash',
+    });
+  });
 });

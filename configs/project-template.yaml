@@ -50,9 +50,10 @@ cache:
   maxTotalContextChars: 120000
 
 models:
-  orchestrator: "deepseek-chat"
-  retriever: "deepseek-chat"
-  prose_writer: "deepseek-chat"
-  continuity_checker: "deepseek-chat"
-  critic: "deepseek-chat"
-  memory_curator: "deepseek-chat"
+  # The TUI model picker only changes lead agents. Most helper agents stay fast by default.
+  main_agent: "deepseek-chat"
+  subagent_default: "deepseek-v4-flash"
+  # Optional advanced overrides:
+  # prose_writer: "deepseek-v4-pro"
+  # critic: "deepseek-chat"
+  # continuity_checker: "deepseek-v4-flash"

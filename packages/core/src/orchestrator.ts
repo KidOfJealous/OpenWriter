@@ -81,7 +81,10 @@ export class Orchestrator {
       const startedAt = Date.now();
       let result: AgentResult;
       try {
-        result = await agent.execute(context, options);
+        result = await agent.execute(context, {
+          ...options,
+          model: this.resolveAgentModel(agentName, options),
+        });
       } catch (error) {
         observer?.onAgentError?.({
           agent: agentName,
@@ -134,6 +137,10 @@ export class Orchestrator {
     }
 
     return context.projectProfile.cache;
+  }
+
+  private resolveAgentModel(agentName: string, options?: AgentOptions): string | undefined {
+    return options?.agentModels?.[agentName] ?? options?.model;
   }
 
   private extractContextPacket(result: AgentResult): WritingContextPacket | null {

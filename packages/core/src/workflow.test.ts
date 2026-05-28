@@ -45,29 +45,29 @@ describe('workflow', () => {
     ]);
   });
 
-  it('plans a chapter-writing loop without broad specialist fan-out', () => {
+  it('plans a chapter-writing loop without automatic specialist fan-out', () => {
     const plan = planAgentLoop('chapterWriting', context('write the next scene'));
     expect(plan.steps.map(step => step.agent)).toEqual([
       'context-retriever',
       'prose-writer',
-      'continuity-checker',
     ]);
     expect(plan.skippedAgents).toContain('character-agent');
     expect(plan.skippedAgents).toContain('worldbuilding-agent');
+    expect(plan.skippedAgents).toContain('continuity-checker');
   });
 
-  it('selects focused specialists when the task asks for them', () => {
+  it('adds reviewers only when explicitly requested by the caller', () => {
     const plan = planAgentLoop(
       'brainstorm',
       context('brainstorm character motivation and worldbuilding rules'),
-      { maxSpecialists: 2 },
+      { reviewers: ['character-agent', 'worldbuilding-agent'] },
     );
 
     expect(plan.steps.map(step => step.agent)).toEqual([
       'context-retriever',
+      'plot-architect',
       'character-agent',
       'worldbuilding-agent',
     ]);
-    expect(plan.skippedAgents).toContain('plot-architect');
   });
 });

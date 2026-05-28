@@ -66,7 +66,7 @@ export interface WorkbenchNotice {
   text: string;
 }
 
-export type ProviderId = 'deepseek' | 'openai' | 'openai-compatible' | 'ollama';
+export type ProviderId = 'deepseek';
 
 export type SupportedModel = string;
 
@@ -109,56 +109,9 @@ export const MODEL_PROVIDERS: ModelProviderPreset[] = [
     models: [
       { id: 'deepseek-chat', name: 'DeepSeek Chat', description: 'default writing turns' },
       { id: 'deepseek-reasoner', name: 'DeepSeek Reasoner', description: 'heavier reasoning turns' },
+      { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', description: 'fast subagent/default utility turns' },
+      { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', description: 'higher quality writing turns' },
     ],
-  },
-  {
-    id: 'openai',
-    name: 'OpenAI',
-    provider: 'openai',
-    baseUrl: 'https://api.openai.com',
-    envKey: 'OPENAI_API_KEY',
-    apiKeyRequired: true,
-    description: 'Fixed endpoint: https://api.openai.com',
-    models: [
-      { id: 'gpt-5.2', name: 'GPT-5.2', description: 'frontier agent model' },
-      { id: 'gpt-5.1', name: 'GPT-5.1', description: 'frontier agent model' },
-      { id: 'gpt-5', name: 'GPT-5', description: 'reasoning model' },
-      { id: 'gpt-5-mini', name: 'GPT-5 Mini', description: 'faster GPT-5' },
-      { id: 'gpt-5-nano', name: 'GPT-5 Nano', description: 'cheapest GPT-5' },
-      { id: 'gpt-4.1', name: 'GPT-4.1', description: 'non-reasoning flagship' },
-      { id: 'gpt-4.1-mini', name: 'GPT-4.1 Mini', description: 'smaller GPT-4.1' },
-      { id: 'gpt-4.1-nano', name: 'GPT-4.1 Nano', description: 'fastest GPT-4.1' },
-      { id: 'gpt-4o', name: 'GPT-4o', description: 'general purpose' },
-      { id: 'gpt-4o-mini', name: 'GPT-4o Mini', description: 'fast and cheaper' },
-      { id: 'o3', name: 'o3', description: 'reasoning model' },
-      { id: 'o4-mini', name: 'o4-mini', description: 'fast reasoning model' },
-    ],
-  },
-  {
-    id: 'ollama',
-    name: 'Ollama Local',
-    provider: 'ollama',
-    baseUrl: 'http://localhost:11434',
-    apiKeyRequired: false,
-    description: 'Fixed endpoint: http://localhost:11434',
-    models: [
-      { id: 'qwen2.5', name: 'Qwen 2.5' },
-      { id: 'llama3.1', name: 'Llama 3.1' },
-      { id: 'mistral', name: 'Mistral' },
-    ],
-  },
-  {
-    id: 'custom',
-    name: 'Custom',
-    provider: 'openai-compatible',
-    baseUrl: '',
-    envKey: 'OPENAI_API_KEY',
-    apiKeyRequired: true,
-    description: 'Custom OpenAI-compatible /v1/chat/completions endpoint.',
-    models: [
-      { id: 'custom', name: 'Custom model id' },
-    ],
-    custom: true,
   },
 ];
 

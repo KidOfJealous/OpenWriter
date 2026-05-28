@@ -49,6 +49,22 @@ import type {
 } from './types.js';
 import { MODEL_PROVIDERS } from './types.js';
 
+const DEFAULT_MAIN_AGENT_MODEL = 'deepseek-chat';
+const DEFAULT_SUBAGENT_MODEL = 'deepseek-v4-flash';
+
+const AGENT_MODEL_CONFIG_KEYS: Record<string, string> = {
+  'context-retriever': 'retriever',
+  'plot-architect': 'plot_architect',
+  'character-agent': 'character_agent',
+  'worldbuilding-agent': 'worldbuilding_agent',
+  'prose-writer': 'prose_writer',
+  'continuity-checker': 'continuity_checker',
+  'style-editor': 'style_editor',
+  critic: 'critic',
+  'memory-curator': 'memory_curator',
+  'patch-agent': 'patch_agent',
+};
+
 const AGENT_DESCRIPTIONS: Record<string, string> = {
   'context-retriever': 'load relevant canon, drafts, and cache-stable context',
   'plot-architect': 'reason about plot structure, causality, pacing, and setup',
@@ -69,6 +85,7 @@ interface ParsedWorkflow {
   task: string;
   label: string;
   extraContent?: string;
+  targetFile?: string;
 }
 
 interface WorkbenchState {
@@ -361,6 +378,7 @@ function SidePanel({ run, notices }: { run?: AgentRunRecord; notices: WorkbenchN
         <Text dimColor>/check task</Text>
         <Text dimColor>/brainstorm task</Text>
         <Text dimColor>/style file</Text>
+        <Text dimColor>/save path</Text>
         <Text dimColor>/provider id | /model id</Text>
         <Text dimColor>/cd path | /clear</Text>
       </Box>
@@ -448,9 +466,12 @@ async function runWorkflow(
   try {
     const provider = createConfiguredProvider(state);
     const orchestrator = createWritingOrchestrator(provider);
+    const mainModel = state.model ?? config.models?.main_agent ?? DEFAULT_MAIN_AGENT_MODEL;
+    const agentModels = resolveAgentModels(plan.steps, config, mainModel);
 
     const results = await orchestrator.executeCustomPipeline(plan.steps, context, {
-      model: state.model ?? undefined,
+      model: mainModel,
+      agentModels,
       apiKey: state.apiKey ?? undefined,
       baseUrl: state.baseUrl ?? undefined,
       quiet: true,
@@ -465,7 +486,7 @@ async function runWorkflow(
         },
         onAgentComplete: event => {
           const estimate = event.result
-            ? summarizeUsageCosts({ [event.agent]: event.result }, state.model ?? 'deepseek-chat').estimates[0]
+            ? summarizeUsageCosts({ [event.agent]: event.result }, agentModels[event.agent] ?? mainModel).estimates[0]
             : undefined;
           setState(prev => updateRun(prev, runId, current => ({
             ...current,
@@ -499,15 +520,20 @@ async function runWorkflow(
       },
     });
 
-    const usage = summarizeUsageCosts(results, state.model ?? 'deepseek-chat');
+    const workflowOutput = buildWorkflowOutput(parsed.workflow, results);
+    const persistedOutput = persistWorkflowOutput(parsed, state.workDir, workflowOutput);
+    const usage = summarizeUsageCosts(results, mainModel);
     setState(prev => updateRun(prev, runId, current => ({
       ...current,
       status: 'done',
       durationMs: Date.now() - startedAt,
-      output: buildWorkflowOutput(parsed.workflow, results),
+      output: persistedOutput ?? workflowOutput,
       usage: toRunUsage(usage),
     }), { activeRunId: null }));
-    pushNotice({ tone: 'success', text: `${parsed.label} completed` });
+    pushNotice({
+      tone: 'success',
+      text: persistedOutput ? `${parsed.label} wrote ${parsed.targetFile}` : `${parsed.label} completed`,
+    });
   } catch (error) {
     setState(prev => updateRun(prev, runId, current => ({
       ...current,
@@ -536,13 +562,27 @@ function createWritingOrchestrator(provider: LLMProvider): Orchestrator {
   return orchestrator;
 }
 
+function resolveAgentModels(
+  steps: AgentLoopPlan['steps'],
+  config: ProjectConfig,
+  mainModel: string,
+): Record<string, string> {
+  const modelConfig = config.models ?? {};
+  const subagentDefault = modelConfig.subagent_default ?? DEFAULT_SUBAGENT_MODEL;
+  return Object.fromEntries(steps.map(step => {
+    const key = AGENT_MODEL_CONFIG_KEYS[step.agent] ?? step.agent.replace(/-/g, '_');
+    const configured = modelConfig[key] ?? modelConfig[step.agent];
+    const model = configured ?? (step.role === 'lead' ? mainModel : subagentDefault);
+    return [step.agent, model];
+  }));
+}
+
 function createConfiguredProvider(state: WorkbenchState): LLMProvider {
-  const providerName = state.provider ?? 'deepseek';
-  const provider = createProvider(providerName);
+  const provider = createProvider('deepseek');
   return withProviderDefaults(provider, {
     apiKey: state.apiKey ?? undefined,
-    baseUrl: state.baseUrl ?? undefined,
-    model: state.model ?? undefined,
+    baseUrl: state.baseUrl ?? 'https://api.deepseek.com',
+    model: state.model ?? DEFAULT_MAIN_AGENT_MODEL,
   });
 }
 
@@ -604,19 +644,32 @@ function handleLocalCommand(
     case 'help':
       pushNotice({
         tone: 'info',
-        text: '/write /check /brainstorm /style /setting /plan /init /cd /provider /model /clear /quit',
+        text: '/write /check /brainstorm /style /setting /plan /save /init /cd /provider /model /clear /quit',
       });
       setState(prev => ({ ...prev, input: '' }));
       return true;
     case 'clear':
       setState(prev => ({ ...prev, input: '', runs: [], notices: [] }));
       return true;
+    case 'save': {
+      const latestRun = state.runs.at(-1);
+      if (!arg) {
+        pushNotice({ tone: 'warning', text: 'usage: /save <path>' });
+      } else if (!latestRun?.output) {
+        pushNotice({ tone: 'warning', text: 'nothing to save yet' });
+      } else {
+        new FileSystemConnector(state.workDir).writeContent(arg, latestRun.output);
+        pushNotice({ tone: 'success', text: `saved: ${arg}` });
+      }
+      setState(prev => ({ ...prev, input: '' }));
+      return true;
+    }
     case 'provider': {
       const provider = MODEL_PROVIDERS.find(item => item.id === arg || item.provider === arg);
       if (!provider || provider.custom) {
-        pushNotice({ tone: 'warning', text: `available providers: ${MODEL_PROVIDERS.filter(item => !item.custom).map(item => item.id).join(', ')}` });
+        pushNotice({ tone: 'warning', text: 'only provider supported: deepseek' });
       } else {
-        const model = provider.models[0]?.id ?? state.model ?? 'deepseek-chat';
+        const model = provider.models[0]?.id ?? state.model ?? DEFAULT_MAIN_AGENT_MODEL;
         setState(prev => ({
           ...prev,
           input: '',
@@ -678,7 +731,7 @@ function parseWorkflowInput(input: string, workDir: string): ParsedWorkflow | nu
     switch (command) {
       case 'write':
       case 'w':
-        return { workflow: 'chapterWriting', task: task || 'continue writing', label: 'write' };
+        return parseTargetedCommand('chapterWriting', task, workDir, 'write', 'continue writing');
       case 'check':
         return { workflow: 'continuityCheck', task: task || 'check project continuity', label: 'check' };
       case 'brainstorm':
@@ -691,37 +744,50 @@ function parseWorkflowInput(input: string, workDir: string): ParsedWorkflow | nu
       case 'setting':
         return { workflow: 'setting', task: task || 'expand setting', label: 'setting' };
       case 'plan':
-        return { workflow: 'chapterWriting', task: task || 'plan chapter structure', label: 'plan' };
+        return parseTargetedCommand('chapterWriting', task, workDir, 'plan', 'plan chapter structure');
       default:
         return null;
     }
   }
 
-  if (/检查|冲突|连续性|漏洞|timeline|continuity|consistency/i.test(input)) {
-    return { workflow: 'continuityCheck', task: input, label: 'check' };
-  }
-  if (/构思|脑暴|设定|角色|人物|世界观|brainstorm|idea|setting|character/i.test(input)) {
-    return { workflow: 'brainstorm', task: input, label: 'brainstorm' };
-  }
-  if (/润色|文风|改写|修订|polish|style|revise/i.test(input)) {
-    return { workflow: 'polish', task: input, label: 'polish' };
-  }
   return { workflow: 'chapterWriting', task: input, label: 'write' };
 }
 
 function parsePolishCommand(command: string, task: string, workDir: string): ParsedWorkflow {
-  const [maybeFile, ...rest] = task.split(/\s+/);
-  const filePath = maybeFile ? resolve(workDir, maybeFile) : '';
-  const extraContent = filePath && existsSync(filePath)
-    ? readFileSync(filePath, 'utf-8')
-    : undefined;
-  const goal = extraContent ? rest.join(' ').trim() : task;
+  const parsed = parseTargetedCommand('polish', task, workDir, command === 'style' ? 'style' : 'polish', 'polish text');
   return {
-    workflow: 'polish',
-    task: goal || (command === 'style' ? 'review style' : 'polish text'),
-    label: command === 'style' ? 'style' : 'polish',
-    extraContent,
+    ...parsed,
+    task: parsed.task || (command === 'style' ? 'review style' : 'polish text'),
   };
+}
+
+function parseTargetedCommand(
+  workflow: WorkflowName,
+  task: string,
+  workDir: string,
+  label: string,
+  defaultTask: string,
+): ParsedWorkflow {
+  const [maybeFile, ...rest] = task.split(/\s+/);
+  const targetFile = maybeFile && looksLikeTextFile(maybeFile) ? maybeFile : undefined;
+  if (!targetFile) {
+    return { workflow, task: task || defaultTask, label };
+  }
+
+  const filePath = resolve(workDir, targetFile);
+  const extraContent = existsSync(filePath) ? readFileSync(filePath, 'utf-8') : undefined;
+  const goal = rest.join(' ').trim();
+  return {
+    workflow,
+    task: goal || defaultTask,
+    label,
+    extraContent,
+    targetFile,
+  };
+}
+
+function looksLikeTextFile(path: string): boolean {
+  return /\.(md|markdown|txt|text|rst|adoc)$/i.test(path);
 }
 
 function createInitialSteps(plan: AgentLoopPlan): AgentRunStep[] {
@@ -771,6 +837,41 @@ function buildWorkflowOutput(workflow: WorkflowName, results: Record<string, Age
   if (!preferred) return 'workflow completed';
   if (typeof preferred.content === 'string') return preferred.content;
   return JSON.stringify(preferred.content, null, 2);
+}
+
+function persistWorkflowOutput(parsed: ParsedWorkflow, workDir: string, output: string): string | null {
+  if (!parsed.targetFile) return null;
+
+  const connector = new FileSystemConnector(workDir);
+  const targetPath = resolve(workDir, parsed.targetFile);
+  const before = existsSync(targetPath) ? readFileSync(targetPath, 'utf-8') : '';
+  connector.writeContent(parsed.targetFile, output);
+  const diff = createUnifiedDiff(parsed.targetFile, before, output);
+  return `wrote ${parsed.targetFile}\n\n${diff}`;
+}
+
+function createUnifiedDiff(filePath: string, before: string, after: string): string {
+  const beforeLines = before ? before.split('\n') : [];
+  const afterLines = after ? after.split('\n') : [];
+  const max = Math.max(beforeLines.length, afterLines.length);
+  const lines = [
+    `--- ${before ? filePath : '/dev/null'}`,
+    `+++ ${filePath}`,
+    `@@ -1,${beforeLines.length} +1,${afterLines.length} @@`,
+  ];
+
+  for (let index = 0; index < max; index++) {
+    const oldLine = beforeLines[index];
+    const newLine = afterLines[index];
+    if (oldLine === newLine && oldLine !== undefined) {
+      lines.push(` ${oldLine}`);
+    } else {
+      if (oldLine !== undefined) lines.push(`-${oldLine}`);
+      if (newLine !== undefined) lines.push(`+${newLine}`);
+    }
+  }
+
+  return lines.join('\n');
 }
 
 function getCacheSnapshot(result?: AgentResult): CacheSnapshot | undefined {
@@ -824,7 +925,7 @@ function detectInitialModel(): ModelRuntimeConfig | null {
     if (provider.custom || !provider.envKey) continue;
     const apiKey = process.env[provider.envKey];
     if (!apiKey) continue;
-    const model = provider.models[0]?.id ?? 'deepseek-chat';
+    const model = provider.models[0]?.id ?? DEFAULT_MAIN_AGENT_MODEL;
 
     return {
       provider: provider.provider,

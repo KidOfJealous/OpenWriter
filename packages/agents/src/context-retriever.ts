@@ -3,6 +3,7 @@ import type {
   WritingContextPacket,
   AgentResult,
   AgentOptions,
+  AggressiveCachePolicy,
   CanonEntry,
   DraftEntry,
   DeprecatedEntry,
@@ -44,7 +45,7 @@ export class ContextRetriever implements WritingAgent {
     const scoredCanon = this.scoreAndRank(canon, context.task, retrievalConfig);
     const scoredDrafts = this.scoreAndRank(drafts.map(d => ({ ...d, status: 'canon' as const, source: d.source, content: d.content, tags: [] as string[] })), context.task, retrievalConfig);
 
-    const selectedCanon = this.selectScored(scoredCanon, policy.maxCanonEntries, policy.stablePrefix);
+    const selectedCanon = this.selectCanonEntries(canon, scoredCanon, policy);
     const selectedDrafts = this.selectScored(scoredDrafts, policy.maxDraftEntries, false);
 
     const packet: WritingContextPacket = {
@@ -97,19 +98,25 @@ export class ContextRetriever implements WritingAgent {
     this.tokenCacheMisses = 0;
   }
 
-  private scoreAndRank<T extends { content: string; status?: string }>(
+  private scoreAndRank<T extends { content: string; status?: string; lastModified?: string }>(
     entries: T[],
     query: string,
     config?: { exactMatchWeight?: number; vectorWeight?: number; recencyWeight?: number; deprecatedPenalty?: number },
   ): Array<{ entry: T; score: number }> {
     const exactWeight = config?.exactMatchWeight ?? 0.5;
+    const vectorWeight = config?.vectorWeight ?? 0.3;
+    const recencyWeight = config?.recencyWeight ?? 0.2;
     const deprecatedPenalty = config?.deprecatedPenalty ?? 0.8;
 
     const queryTerms = this.tokenize(query);
     const scored = entries.map(entry => {
       const contentTerms = this.tokenize(entry.content);
       const exactScore = this.exactMatchScore(queryTerms, contentTerms);
-      let score = exactWeight * exactScore;
+      const vectorScore = this.termVectorScore(queryTerms, contentTerms);
+      const recencyScore = this.recencyScore(entry.lastModified);
+      let score = (exactWeight * exactScore)
+        + (vectorWeight * vectorScore)
+        + (recencyWeight * recencyScore);
 
       // Penalize deprecated items
       if (entry.status === 'deprecated') {
@@ -167,6 +174,45 @@ export class ContextRetriever implements WritingAgent {
     return matches / queryTerms.length;
   }
 
+  private termVectorScore(queryTerms: string[], contentTerms: string[]): number {
+    if (queryTerms.length === 0 || contentTerms.length === 0) return 0;
+    const queryVector = this.termCounts(queryTerms);
+    const contentVector = this.termCounts(contentTerms);
+    let dot = 0;
+    let queryMagnitude = 0;
+    let contentMagnitude = 0;
+
+    for (const count of queryVector.values()) {
+      queryMagnitude += count * count;
+    }
+    for (const count of contentVector.values()) {
+      contentMagnitude += count * count;
+    }
+    for (const [term, queryCount] of queryVector) {
+      dot += queryCount * (contentVector.get(term) ?? 0);
+    }
+
+    if (queryMagnitude === 0 || contentMagnitude === 0) return 0;
+    return dot / (Math.sqrt(queryMagnitude) * Math.sqrt(contentMagnitude));
+  }
+
+  private termCounts(terms: string[]): Map<string, number> {
+    const counts = new Map<string, number>();
+    for (const term of terms) {
+      counts.set(term, (counts.get(term) ?? 0) + 1);
+    }
+    return counts;
+  }
+
+  private recencyScore(lastModified?: string): number {
+    if (!lastModified) return 0;
+    const modified = Date.parse(lastModified);
+    if (Number.isNaN(modified)) return 0;
+    const ageMs = Math.max(0, Date.now() - modified);
+    const ageDays = ageMs / (24 * 60 * 60 * 1000);
+    return 1 / (1 + ageDays / 30);
+  }
+
   private loadCanonEntries(projectDir: string, profile: ProjectProfile): CanonEntry[] {
     const entries: CanonEntry[] = [];
     for (const dir of profile.sourceOfTruth) {
@@ -175,6 +221,29 @@ export class ContextRetriever implements WritingAgent {
       entries.push(...this.readMarkdownFiles(fullPath));
     }
     return entries;
+  }
+
+  private selectCanonEntries(
+    canon: CanonEntry[],
+    scoredCanon: Array<{ entry: CanonEntry; score: number }>,
+    policy: AggressiveCachePolicy,
+  ): Array<{ entry: CanonEntry; score: number }> {
+    if (!policy.stablePrefix || policy.strategy !== 'aggressive') {
+      return this.selectScored(scoredCanon, policy.maxCanonEntries, false);
+    }
+
+    const scoreByEntry = new Map(scoredCanon.map(item => [item.entry, item.score]));
+    return [...canon]
+      .sort((a, b) => {
+        const sourceCompare = a.source.localeCompare(b.source);
+        if (sourceCompare !== 0) return sourceCompare;
+        return hashText(a.content).localeCompare(hashText(b.content));
+      })
+      .slice(0, policy.maxCanonEntries)
+      .map(entry => ({
+        entry,
+        score: scoreByEntry.get(entry) ?? 0,
+      }));
   }
 
   private loadDraftEntries(projectDir: string, profile: ProjectProfile): DraftEntry[] {

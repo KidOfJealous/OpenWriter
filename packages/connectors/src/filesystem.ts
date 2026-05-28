@@ -115,7 +115,10 @@ export class FileSystemConnector {
         maxResultChars: 1800,
         maxTotalContextChars: 120000,
       },
-      models: {},
+      models: {
+        main_agent: 'deepseek-chat',
+        subagent_default: 'deepseek-v4-flash',
+      },
     };
   }
 }

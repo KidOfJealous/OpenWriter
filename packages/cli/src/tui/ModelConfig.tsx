@@ -13,7 +13,7 @@ interface ModelConfigProps {
 }
 
 type FocusPane = 'providers' | 'models';
-type PromptStep = 'picker' | 'apiKey' | 'customModel' | 'customBaseUrl' | 'customApiKey';
+type PromptStep = 'picker' | 'apiKey';
 
 export function ModelConfig({ onConfig }: ModelConfigProps) {
   const [step, setStep] = useState<PromptStep>('picker');
@@ -21,9 +21,6 @@ export function ModelConfig({ onConfig }: ModelConfigProps) {
   const [providerIndex, setProviderIndex] = useState(0);
   const [modelIndex, setModelIndex] = useState(0);
   const [apiKey, setApiKey] = useState('');
-  const [customModel, setCustomModel] = useState('');
-  const [customBaseUrl, setCustomBaseUrl] = useState('');
-  const [customApiKey, setCustomApiKey] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   const provider = MODEL_PROVIDERS[providerIndex];
@@ -77,14 +74,6 @@ export function ModelConfig({ onConfig }: ModelConfigProps) {
   });
 
   const chooseModel = (selectedProvider: ModelProviderPreset, model: ProviderModel) => {
-    if (selectedProvider.custom) {
-      setCustomModel('');
-      setCustomBaseUrl('');
-      setCustomApiKey('');
-      setStep('customModel');
-      return;
-    }
-
     const envValue = selectedProvider.envKey ? process.env[selectedProvider.envKey] : undefined;
     if (selectedProvider.apiKeyRequired && !envValue) {
       setApiKey('');
@@ -135,94 +124,11 @@ export function ModelConfig({ onConfig }: ModelConfigProps) {
     );
   }
 
-  if (step === 'customModel') {
-    return (
-      <PromptInput
-        title="Custom Model"
-        label="Model ID"
-        value={customModel}
-        onChange={value => {
-          setCustomModel(value);
-          setError(null);
-        }}
-        onSubmit={() => {
-          if (!customModel.trim()) {
-            setError('Enter a model id.');
-            return;
-          }
-          setStep('customBaseUrl');
-        }}
-        placeholder="model-id"
-        error={error}
-      />
-    );
-  }
-
-  if (step === 'customBaseUrl') {
-    return (
-      <PromptInput
-        title="Custom Base URL"
-        label="OpenAI-compatible base URL"
-        value={customBaseUrl}
-        onChange={value => {
-          setCustomBaseUrl(value);
-          setError(null);
-        }}
-        onSubmit={() => {
-          const cleaned = customBaseUrl.trim().replace(/\/+$/, '');
-          if (!/^https?:\/\//i.test(cleaned)) {
-            setError('Base URL must start with http:// or https://.');
-            return;
-          }
-          setCustomBaseUrl(cleaned);
-          setStep('customApiKey');
-        }}
-        placeholder="https://api.example.com"
-        error={error}
-      />
-    );
-  }
-
-  if (step === 'customApiKey') {
-    return (
-      <PromptInput
-        title="Custom API Key"
-        label="API key"
-        value={customApiKey}
-        onChange={value => {
-          setCustomApiKey(value);
-          setError(null);
-        }}
-        onSubmit={() => {
-          const model = customModel.trim();
-          const baseUrl = customBaseUrl.trim().replace(/\/+$/, '');
-          const key = customApiKey.trim();
-          if (!key) {
-            setError('Paste an API key.');
-            return;
-          }
-          process.env.OPENAI_API_KEY = key;
-          onConfig({
-            provider: 'openai-compatible',
-            model,
-            baseUrl,
-            apiKey: key,
-            envKey: 'OPENAI_API_KEY',
-            displayName: `Custom / ${model}`,
-          });
-        }}
-        placeholder="Paste API key..."
-        error={error}
-        mask
-      />
-    );
-  }
-
   return (
     <Box flexDirection="column">
       <Box borderStyle="round" borderColor="cyan" paddingX={1}>
         <Text bold color="cyan">Model Picker</Text>
-        <Text dimColor>{'  Provider -> model. Custom handles base URL.'}</Text>
+        <Text dimColor>{'  DeepSeek only. Model selection applies to lead agents.'}</Text>
       </Box>
 
       <Box marginTop={1} flexDirection="row">
@@ -253,15 +159,11 @@ export function ModelConfig({ onConfig }: ModelConfigProps) {
 
       <Box marginTop={1} flexDirection="column">
         <Text dimColor>{provider.description}</Text>
-        {provider.custom ? (
-          <Text dimColor>Custom is the only path that asks for base URL.</Text>
-        ) : (
-          <Text dimColor>
-            {provider.apiKeyRequired
-              ? `API key: ${provider.envKey}${envKeyValue(provider) ? ' found' : ' will be requested'}`
-              : 'No API key required.'}
-          </Text>
-        )}
+        <Text dimColor>
+          {provider.apiKeyRequired
+            ? `API key: ${provider.envKey}${envKeyValue(provider) ? ' found' : ' will be requested'}`
+            : 'No API key required.'}
+        </Text>
         {error ? <Text color="red">{error}</Text> : <Text dimColor>Tab switches pane, Enter selects, Up/Down or j/k moves.</Text>}
       </Box>
     </Box>

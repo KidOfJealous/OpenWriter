@@ -114,6 +114,7 @@ export interface AgentResult {
 
 export interface AgentOptions {
   model?: string;
+  agentModels?: Record<string, string>;
   temperature?: number;
   maxTokens?: number;
   quiet?: boolean;
@@ -173,7 +174,7 @@ export interface AgentLoopPlan {
 }
 
 export interface AgentLoopPlanningOptions {
-  maxSpecialists?: number;
+  reviewers?: string[];
 }
 
 // LLM Provider
