@@ -1,15 +1,3 @@
-export interface ChatMessage {
-  role: 'user' | 'assistant' | 'system' | 'tool';
-  content: string;
-  timestamp: number;
-  streaming?: boolean;
-  metadata?: {
-    toolName?: string;
-    tokens?: number;
-    cost?: number;
-  };
-}
-
 export type AgentRunStatus = 'queued' | 'running' | 'done' | 'failed';
 
 export interface AgentRunStep {
@@ -117,18 +105,3 @@ export const MODEL_PROVIDERS: ModelProviderPreset[] = [
     custom: true,
   },
 ];
-
-export const MODEL_CONFIGS: Record<string, {
-  name: string;
-  envKey?: string;
-  baseUrl: string;
-}> = Object.fromEntries(
-  MODEL_PROVIDERS.flatMap(provider => provider.models.map(model => [
-    model.id,
-    {
-      name: model.name,
-      envKey: provider.envKey,
-      baseUrl: provider.baseUrl,
-    },
-  ])),
-);

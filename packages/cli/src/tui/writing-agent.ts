@@ -170,7 +170,14 @@ export async function runWritingAgentTurn(options: WritingAgentOptions): Promise
     }
   }
 
-  throw new Error(`agent stopped after ${MAX_ITERATIONS} tool iterations without a final answer`);
+  // 达到迭代限制时，强制生成总结而不是抛出错误
+  finalContent = '[iteration limit reached] The agent ran for ' + MAX_ITERATIONS + ' tool iterations. Generating a summary of what was accomplished.';
+  options.callbacks?.onTextDelta?.(finalContent);
+  return {
+    content: finalContent,
+    diffs: runtime.diffs,
+    usage: accumulatedUsage,
+  };
 }
 
 function buildSystemPrompt(projectConfig?: ProjectConfig | null): string {

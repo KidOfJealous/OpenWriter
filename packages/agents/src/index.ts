@@ -7,4 +7,3 @@ export * from './character-agent.js';
 export * from './plot-architect.js';
 export * from './worldbuilding-agent.js';
 export * from './style-editor.js';
-export * from './patch-agent.js';
