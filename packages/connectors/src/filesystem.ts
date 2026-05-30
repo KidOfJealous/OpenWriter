@@ -37,16 +37,6 @@ export class FileSystemConnector {
     const configPath = join(this.projectDir, 'openwriter.yaml');
     writeFileSync(configPath, stringify(template), 'utf-8');
 
-    // Create directories
-    for (const dir of template.project.sourceOfTruth) {
-      const fullPath = resolve(this.projectDir, dir);
-      if (!existsSync(fullPath)) mkdirSync(fullPath, { recursive: true });
-    }
-    for (const dir of template.project.draftDirs) {
-      const fullPath = resolve(this.projectDir, dir);
-      if (!existsSync(fullPath)) mkdirSync(fullPath, { recursive: true });
-    }
-
     return template;
   }
 
@@ -77,8 +67,6 @@ export class FileSystemConnector {
         name: 'My Writing Project',
         language: 'zh-CN',
         genre: 'fantasy',
-        sourceOfTruth: ['canon/'],
-        draftDirs: ['chapters/', 'fragments/'],
       },
       writing: {
         defaultMode: 'plan_then_write',
@@ -115,10 +103,7 @@ export class FileSystemConnector {
         maxResultChars: 1800,
         maxTotalContextChars: 120000,
       },
-      models: {
-        main_agent: 'deepseek-chat',
-        subagent_default: 'deepseek-v4-flash',
-      },
+      models: {},
     };
   }
 }

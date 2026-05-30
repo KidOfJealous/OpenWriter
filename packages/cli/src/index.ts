@@ -33,11 +33,12 @@ Usage:
 
 Inside the TUI:
   /init <name>       Initialize a writing project
-  /write <task>      Write with observe-act-verify routing
-  /check <task>      Run focused continuity checks
-  /brainstorm <task> Brainstorm with only needed specialists
-  /style <file>      Review prose style
+  /write <task>      Allow explicit file edits through tools
+  /check <task>      Read-only continuity or structure check
+  /brainstorm <task> Brainstorm naturally; save only when asked
+  /style <file>      Review style by default
   /setting <task>    Expand setting/worldbuilding
+  /config            Configure providers
   /provider <id>     Switch provider preset
   /model <id>        Switch model
   /cd <path>         Change workspace

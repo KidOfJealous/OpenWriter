@@ -10,8 +10,21 @@ import type {
   ProjectProfile,
 } from '@openwriter/core';
 import { hashText, resolveAggressiveCachePolicy } from '@openwriter/core';
-import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
-import { join, resolve } from 'path';
+import { readFileSync, readdirSync, statSync } from 'fs';
+import { extname, join, relative, resolve } from 'path';
+
+const TEXT_EXTENSIONS = new Set(['.md', '.markdown', '.txt', '.text', '.rst', '.adoc']);
+const IGNORED_DIRECTORIES = new Set([
+  '.git',
+  '.obsidian',
+  '.qoder',
+  '.vscode',
+  'node_modules',
+  'dist',
+  'build',
+  'release',
+  'coverage',
+]);
 
 interface CachedFile {
   mtimeMs: number;
@@ -21,7 +34,7 @@ interface CachedFile {
 
 export class ContextRetriever implements WritingAgent {
   name = 'context-retriever';
-  description = '从项目文件中检索相关设定、角色、时间线，生成上下文包';
+  description = 'Find relevant writing context from the current workspace.';
 
   private static fileCache = new Map<string, CachedFile>();
   private static tokenCache = new Map<string, string[]>();
@@ -36,25 +49,34 @@ export class ContextRetriever implements WritingAgent {
     const profile = context.projectProfile;
     const policy = resolveAggressiveCachePolicy(profile.cache);
 
-    const canon = this.loadCanonEntries(projectDir, profile);
-    const drafts = this.loadDraftEntries(projectDir, profile);
+    const canon: CanonEntry[] = [];
+    const drafts = this.loadWorkspaceEntries(projectDir);
     const deprecated = this.loadDeprecatedEntries(projectDir, profile);
 
-    // Score and rank canon entries by relevance to task
     const retrievalConfig = profile.retrieval;
     const scoredCanon = this.scoreAndRank(canon, context.task, retrievalConfig);
-    const scoredDrafts = this.scoreAndRank(drafts.map(d => ({ ...d, status: 'canon' as const, source: d.source, content: d.content, tags: [] as string[] })), context.task, retrievalConfig);
+    const scoredDrafts = this.scoreAndRank(
+      drafts.map(d => ({ ...d, status: 'canon' as const, tags: [] as string[] })),
+      context.task,
+      retrievalConfig,
+    );
 
     const selectedCanon = this.selectCanonEntries(canon, scoredCanon, policy);
     const selectedDrafts = this.selectScored(scoredDrafts, policy.maxDraftEntries, false);
+    const relevantDrafts = this.mergeDrafts(
+      context.relevantDrafts,
+      selectedDrafts.map(s => ({
+        source: s.entry.source,
+        content: s.entry.content,
+        lastModified: s.entry.lastModified,
+      })),
+      policy.maxDraftEntries,
+    );
 
     const packet: WritingContextPacket = {
       ...context,
       relevantCanon: selectedCanon.map(s => s.entry),
-      relevantDrafts: selectedDrafts.map(s => ({
-        source: (s.entry as any).source,
-        content: (s.entry as any).content,
-      })),
+      relevantDrafts,
       deprecatedItems: deprecated,
     };
 
@@ -67,7 +89,7 @@ export class ContextRetriever implements WritingAgent {
           draftCount: drafts.length,
           deprecatedCount: deprecated.length,
           taskEntities: this.extractTaskEntities(context.task),
-          relevanceScores: scoredCanon.slice(0, 5).map(s => ({
+          relevanceScores: scoredDrafts.slice(0, 5).map(s => ({
             source: s.entry.source,
             score: s.score,
           })),
@@ -98,7 +120,7 @@ export class ContextRetriever implements WritingAgent {
     this.tokenCacheMisses = 0;
   }
 
-  private scoreAndRank<T extends { content: string; status?: string; lastModified?: string }>(
+  private scoreAndRank<T extends { content: string; source?: string; status?: string; lastModified?: string }>(
     entries: T[],
     query: string,
     config?: { exactMatchWeight?: number; vectorWeight?: number; recencyWeight?: number; deprecatedPenalty?: number },
@@ -110,7 +132,7 @@ export class ContextRetriever implements WritingAgent {
 
     const queryTerms = this.tokenize(query);
     const scored = entries.map(entry => {
-      const contentTerms = this.tokenize(entry.content);
+      const contentTerms = this.tokenize(`${entry.source ?? ''}\n${entry.content}`);
       const exactScore = this.exactMatchScore(queryTerms, contentTerms);
       const vectorScore = this.termVectorScore(queryTerms, contentTerms);
       const recencyScore = this.recencyScore(entry.lastModified);
@@ -118,7 +140,6 @@ export class ContextRetriever implements WritingAgent {
         + (vectorWeight * vectorScore)
         + (recencyWeight * recencyScore);
 
-      // Penalize deprecated items
       if (entry.status === 'deprecated') {
         score *= deprecatedPenalty;
       }
@@ -138,19 +159,14 @@ export class ContextRetriever implements WritingAgent {
     }
 
     this.tokenCacheMisses++;
-    // Chinese: split into characters and bigrams
-    // English: split by whitespace and lowercase
     const chinese = text.match(/[\u4e00-\u9fff]+/g) ?? [];
     const english = text.match(/[a-zA-Z]+/g) ?? [];
-
     const terms: string[] = [];
 
     for (const segment of chinese) {
-      // Single characters
       for (const char of segment) {
         terms.push(char);
       }
-      // Bigrams
       for (let i = 0; i < segment.length - 1; i++) {
         terms.push(segment.slice(i, i + 2));
       }
@@ -213,16 +229,6 @@ export class ContextRetriever implements WritingAgent {
     return 1 / (1 + ageDays / 30);
   }
 
-  private loadCanonEntries(projectDir: string, profile: ProjectProfile): CanonEntry[] {
-    const entries: CanonEntry[] = [];
-    for (const dir of profile.sourceOfTruth) {
-      const fullPath = resolve(projectDir, dir);
-      if (!existsSync(fullPath)) continue;
-      entries.push(...this.readMarkdownFiles(fullPath));
-    }
-    return entries;
-  }
-
   private selectCanonEntries(
     canon: CanonEntry[],
     scoredCanon: Array<{ entry: CanonEntry; score: number }>,
@@ -246,51 +252,41 @@ export class ContextRetriever implements WritingAgent {
       }));
   }
 
-  private loadDraftEntries(projectDir: string, profile: ProjectProfile): DraftEntry[] {
-    const entries: DraftEntry[] = [];
-    for (const dir of profile.draftDirs) {
-      const fullPath = resolve(projectDir, dir);
-      if (!existsSync(fullPath)) continue;
-      for (const file of this.findMarkdownFiles(fullPath)) {
-        const content = this.readCachedFile(file);
-        entries.push({
-          source: file,
-          content,
-          lastModified: statSync(file).mtime.toISOString(),
-        });
-      }
+  private mergeDrafts(existing: DraftEntry[], selected: DraftEntry[], maxEntries: number): DraftEntry[] {
+    const seen = new Set<string>();
+    const merged: DraftEntry[] = [];
+
+    for (const entry of [...existing, ...selected]) {
+      const key = `${entry.source}:${hashText(entry.content)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(entry);
+      if (merged.length >= maxEntries) break;
     }
-    return entries;
+
+    return merged;
+  }
+
+  private loadWorkspaceEntries(projectDir: string): DraftEntry[] {
+    return this.findWorkspaceTextFiles(projectDir).map(file => ({
+      source: this.toWorkspacePath(projectDir, file),
+      content: this.readCachedFile(file),
+      lastModified: statSync(file).mtime.toISOString(),
+    }));
   }
 
   private loadDeprecatedEntries(_projectDir: string, _profile: ProjectProfile): DeprecatedEntry[] {
-    // MVP: 空实现，后续从 deprecated index 文件读取
     return [];
   }
 
-  private readMarkdownFiles(dir: string): CanonEntry[] {
-    const entries: CanonEntry[] = [];
-    for (const file of this.findMarkdownFiles(dir)) {
-      const content = this.readCachedFile(file);
-      entries.push({
-        source: file,
-        status: 'canon',
-        content,
-        tags: [],
-      });
-    }
-    return entries;
-  }
-
-  private findMarkdownFiles(dir: string): string[] {
+  private findWorkspaceTextFiles(dir: string): string[] {
     const files: string[] = [];
-    const entries = readdirSync(dir);
-    for (const entry of entries) {
-      const fullPath = join(dir, entry);
-      const stat = statSync(fullPath);
-      if (stat.isDirectory()) {
-        files.push(...this.findMarkdownFiles(fullPath));
-      } else if (entry.endsWith('.md') || entry.endsWith('.txt')) {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name.startsWith('.') || IGNORED_DIRECTORIES.has(entry.name)) continue;
+      const fullPath = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        files.push(...this.findWorkspaceTextFiles(fullPath));
+      } else if (TEXT_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
         files.push(fullPath);
       }
     }
@@ -330,11 +326,13 @@ export class ContextRetriever implements WritingAgent {
     return content;
   }
 
+  private toWorkspacePath(projectDir: string, file: string): string {
+    return relative(projectDir, resolve(file)).replace(/\\/g, '/');
+  }
+
   private extractTaskEntities(task: string): string[] {
-    // MVP: 简单提取，后续用 NLP
     const entities: string[] = [];
-    const patterns = /第[零一二三四五六七八九十百\d]+[章节回]/g;
-    const matches = task.match(patterns);
+    const matches = task.match(/第[零一二三四五六七八九十百\d]+[章节回]/g);
     if (matches) entities.push(...matches);
     return entities;
   }

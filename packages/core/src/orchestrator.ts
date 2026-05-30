@@ -100,6 +100,7 @@ export class Orchestrator {
       result.metadata = {
         ...result.metadata,
         cache: cache.getSnapshot(context),
+        workflowLog: cache.getWorkflowLog(),
       };
       observer?.onAgentComplete?.({
         agent: agentName,

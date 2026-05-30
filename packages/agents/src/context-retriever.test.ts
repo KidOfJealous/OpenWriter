@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { ContextRetriever } from '../src/context-retriever';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import type { WritingContextPacket } from '@openwriter/core';
 
 describe('context-retriever', () => {
   const retriever = new ContextRetriever();
@@ -70,5 +74,40 @@ describe('context-retriever', () => {
     });
 
     expect(selected[0].entry.source).toBe('a.md');
+  });
+
+  it('loads text context from the whole workspace instead of configured directories', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'openwriter-context-'));
+    const oldCwd = process.cwd();
+    try {
+      mkdirSync(join(workspace, '人物', '狄人'), { recursive: true });
+      mkdirSync(join(workspace, 'chapters'), { recursive: true });
+      writeFileSync(join(workspace, '人物', '狄人', '夏原.md'), '夏原在春末抵达北境。', 'utf-8');
+      writeFileSync(join(workspace, 'chapters', 'ignored-by-query.md'), '无关内容', 'utf-8');
+      process.chdir(workspace);
+
+      const result = await retriever.execute({
+        task: '检查夏原时间线',
+        projectProfile: {
+          name: 'vault',
+          language: 'zh-CN',
+          genre: 'fantasy',
+          sourceOfTruth: ['does-not-exist'],
+          draftDirs: ['also-does-not-exist'],
+        },
+        relevantCanon: [],
+        relevantDrafts: [],
+        deprecatedItems: [],
+        openQuestions: [],
+        constraints: [],
+      } satisfies WritingContextPacket);
+
+      const content = result.content as { packet: WritingContextPacket };
+      expect(content.packet.relevantDrafts[0].source).toBe('人物/狄人/夏原.md');
+      expect(content.packet.relevantDrafts[0].content).toContain('夏原');
+    } finally {
+      process.chdir(oldCwd);
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 });

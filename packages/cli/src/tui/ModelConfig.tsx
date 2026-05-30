@@ -10,23 +10,44 @@ import {
 
 interface ModelConfigProps {
   onConfig: (config: ModelRuntimeConfig) => void;
+  onCancel?: () => void;
+  canCancel?: boolean;
 }
 
 type FocusPane = 'providers' | 'models';
-type PromptStep = 'picker' | 'apiKey';
+type PromptStep = 'picker' | 'apiKey' | 'customModel' | 'customBaseUrl' | 'customApiKey';
 
-export function ModelConfig({ onConfig }: ModelConfigProps) {
+export function ModelConfig({ onConfig, onCancel, canCancel = false }: ModelConfigProps) {
   const [step, setStep] = useState<PromptStep>('picker');
   const [focus, setFocus] = useState<FocusPane>('providers');
   const [providerIndex, setProviderIndex] = useState(0);
   const [modelIndex, setModelIndex] = useState(0);
   const [apiKey, setApiKey] = useState('');
+  const [customModel, setCustomModel] = useState('');
+  const [customBaseUrl, setCustomBaseUrl] = useState('');
+  const [customApiKey, setCustomApiKey] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   const provider = MODEL_PROVIDERS[providerIndex];
   const selectedModel = provider.models[Math.min(modelIndex, provider.models.length - 1)];
 
   useInput((input, key) => {
+    if (key.escape) {
+      setError(null);
+      if (step === 'customApiKey') {
+        setStep('customBaseUrl');
+      } else if (step === 'customBaseUrl') {
+        setStep('customModel');
+      } else if (step === 'customModel' || step === 'apiKey') {
+        setStep('picker');
+      } else if (canCancel && onCancel) {
+        onCancel();
+      } else {
+        setError('Configure a provider first, or press Ctrl+C to quit.');
+      }
+      return;
+    }
+
     if (step !== 'picker') return;
 
     if (key.tab || key.leftArrow || key.rightArrow) {
@@ -74,6 +95,14 @@ export function ModelConfig({ onConfig }: ModelConfigProps) {
   });
 
   const chooseModel = (selectedProvider: ModelProviderPreset, model: ProviderModel) => {
+    if (selectedProvider.custom) {
+      setCustomModel('');
+      setCustomBaseUrl('');
+      setCustomApiKey('');
+      setStep('customModel');
+      return;
+    }
+
     const envValue = selectedProvider.envKey ? process.env[selectedProvider.envKey] : undefined;
     if (selectedProvider.apiKeyRequired && !envValue) {
       setApiKey('');
@@ -98,6 +127,89 @@ export function ModelConfig({ onConfig }: ModelConfigProps) {
       displayName: `${selectedProvider.name} / ${model}`,
     });
   };
+
+  if (step === 'customModel') {
+    return (
+      <PromptInput
+        title="Custom Model"
+        label="Model ID"
+        value={customModel}
+        onChange={value => {
+          setCustomModel(value);
+          setError(null);
+        }}
+        onSubmit={() => {
+          if (!customModel.trim()) {
+            setError('Enter a model id.');
+            return;
+          }
+          setStep('customBaseUrl');
+        }}
+        placeholder="model-id"
+        error={error}
+      />
+    );
+  }
+
+  if (step === 'customBaseUrl') {
+    return (
+      <PromptInput
+        title="Custom Base URL"
+        label="OpenAI-compatible base URL"
+        value={customBaseUrl}
+        onChange={value => {
+          setCustomBaseUrl(value);
+          setError(null);
+        }}
+        onSubmit={() => {
+          const cleaned = normalizeCustomBaseUrl(customBaseUrl);
+          if (!/^https?:\/\//i.test(cleaned)) {
+            setError('Base URL must start with http:// or https://.');
+            return;
+          }
+          setCustomBaseUrl(cleaned);
+          setStep('customApiKey');
+        }}
+        placeholder="https://api.example.com"
+        error={error}
+      />
+    );
+  }
+
+  if (step === 'customApiKey') {
+    return (
+      <PromptInput
+        title="Custom API Key"
+        label="API key"
+        value={customApiKey}
+        onChange={value => {
+          setCustomApiKey(value);
+          setError(null);
+        }}
+        onSubmit={() => {
+          const model = customModel.trim();
+          const baseUrl = normalizeCustomBaseUrl(customBaseUrl);
+          const key = customApiKey.trim();
+          if (!key) {
+            setError('Paste an API key.');
+            return;
+          }
+          process.env.OPENAI_API_KEY = key;
+          onConfig({
+            provider: 'openai-compatible',
+            model,
+            baseUrl,
+            apiKey: key,
+            envKey: 'OPENAI_API_KEY',
+            displayName: `Custom / ${model}`,
+          });
+        }}
+        placeholder="Paste API key..."
+        error={error}
+        mask
+      />
+    );
+  }
 
   if (step === 'apiKey') {
     return (
@@ -128,7 +240,7 @@ export function ModelConfig({ onConfig }: ModelConfigProps) {
     <Box flexDirection="column">
       <Box borderStyle="round" borderColor="cyan" paddingX={1}>
         <Text bold color="cyan">Model Picker</Text>
-        <Text dimColor>{'  DeepSeek only. Model selection applies to lead agents.'}</Text>
+        <Text dimColor>{'  DeepSeek preset or custom compatible endpoint.'}</Text>
       </Box>
 
       <Box marginTop={1} flexDirection="row">
@@ -159,12 +271,16 @@ export function ModelConfig({ onConfig }: ModelConfigProps) {
 
       <Box marginTop={1} flexDirection="column">
         <Text dimColor>{provider.description}</Text>
-        <Text dimColor>
-          {provider.apiKeyRequired
-            ? `API key: ${provider.envKey}${envKeyValue(provider) ? ' found' : ' will be requested'}`
-            : 'No API key required.'}
-        </Text>
-        {error ? <Text color="red">{error}</Text> : <Text dimColor>Tab switches pane, Enter selects, Up/Down or j/k moves.</Text>}
+        {provider.custom ? (
+          <Text dimColor>Custom asks for model, base URL, and API key.</Text>
+        ) : (
+          <Text dimColor>
+            {provider.apiKeyRequired
+              ? `API key: ${provider.envKey}${envKeyValue(provider) ? ' found' : ' will be requested'}`
+              : 'No API key required.'}
+          </Text>
+        )}
+        {error ? <Text color="red">{error}</Text> : <Text dimColor>Tab switches pane, Enter selects, Esc cancels.</Text>}
       </Box>
     </Box>
   );
@@ -245,6 +361,7 @@ function PromptInput({
           onSubmit={onSubmit}
           placeholder={placeholder}
           mask={mask ? '*' : undefined}
+          showCursor={false}
         />
       </Box>
 
@@ -253,10 +370,23 @@ function PromptInput({
           <Text color="red">{error}</Text>
         </Box>
       )}
+
+      <Box marginTop={1}>
+        <Text dimColor>Esc goes back.</Text>
+      </Box>
     </Box>
   );
 }
 
 function envKeyValue(provider: ModelProviderPreset): string {
   return provider.envKey ? process.env[provider.envKey] ?? '' : '';
+}
+
+function normalizeCustomBaseUrl(baseUrl: string): string {
+  return baseUrl
+    .trim()
+    .replace(/\/+$/, '')
+    .replace(/\/v1\/chat\/completions$/i, '')
+    .replace(/\/chat\/completions$/i, '')
+    .replace(/\/v1$/i, '');
 }

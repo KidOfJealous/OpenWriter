@@ -59,6 +59,7 @@ export interface AgentRunRecord {
     estimatedUsd?: number;
     estimatedSavingsUsd?: number;
   };
+  thought?: string;
 }
 
 export interface WorkbenchNotice {
@@ -66,7 +67,7 @@ export interface WorkbenchNotice {
   text: string;
 }
 
-export type ProviderId = 'deepseek';
+export type ProviderId = 'deepseek' | 'openai-compatible';
 
 export type SupportedModel = string;
 
@@ -112,6 +113,19 @@ export const MODEL_PROVIDERS: ModelProviderPreset[] = [
       { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', description: 'fast subagent/default utility turns' },
       { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', description: 'higher quality writing turns' },
     ],
+  },
+  {
+    id: 'custom',
+    name: 'Custom',
+    provider: 'openai-compatible',
+    baseUrl: '',
+    envKey: 'OPENAI_API_KEY',
+    apiKeyRequired: true,
+    description: 'Custom OpenAI-compatible /v1/chat/completions endpoint.',
+    models: [
+      { id: 'custom', name: 'Custom model id' },
+    ],
+    custom: true,
   },
 ];
 

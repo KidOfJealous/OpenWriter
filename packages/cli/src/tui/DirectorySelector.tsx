@@ -23,7 +23,13 @@ export function DirectorySelector({ onSelect, currentDir }: DirectorySelectorPro
   ];
 
   useInput((input, key) => {
-    if (mode !== 'browse') return;
+    if (mode !== 'browse') {
+      if (key.escape) {
+        setMode('browse');
+        setError(null);
+      }
+      return;
+    }
 
     if (key.upArrow || input === 'k') {
       setSelectedIndex(prev => (prev - 1 + suggestions.length) % suggestions.length);
@@ -63,6 +69,7 @@ export function DirectorySelector({ onSelect, currentDir }: DirectorySelectorPro
               }
             }}
             placeholder="Enter directory path..."
+            showCursor={false}
           />
         </Box>
 
@@ -73,7 +80,7 @@ export function DirectorySelector({ onSelect, currentDir }: DirectorySelectorPro
         )}
 
         <Box marginTop={1}>
-          <Text dimColor>Enter to confirm</Text>
+          <Text dimColor>Enter to confirm, Esc to go back</Text>
         </Box>
       </Box>
     );

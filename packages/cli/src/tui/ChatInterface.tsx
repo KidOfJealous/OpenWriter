@@ -2,39 +2,16 @@ import React, { useCallback, useMemo, useState } from 'react';
 import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import TextInput from 'ink-text-input';
 import Spinner from 'ink-spinner';
-import { existsSync, readFileSync } from 'fs';
-import { resolve } from 'path';
-import {
-  createProvider,
-  Orchestrator,
-  planAgentLoop,
-  summarizeUsageCosts,
-} from '@openwriter/core';
-import {
-  CharacterAgent,
-  ContextRetriever,
-  ContinuityChecker,
-  Critic,
-  MemoryCurator,
-  PatchAgent,
-  PlotArchitect,
-  ProseWriter,
-  StyleEditor,
-  WorldbuildingAgent,
-} from '@openwriter/agents';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { dirname, join, resolve } from 'path';
+import { homedir } from 'os';
+import { createProvider } from '@openwriter/core';
 import { FileSystemConnector } from '@openwriter/connectors';
 import type {
-  AgentLoopPlan,
-  AgentResult,
-  CacheSnapshot,
   LLMProvider,
   ProjectConfig,
   ProviderConfig,
-  StyleProfile,
-  UsageCostEstimate,
-  UsageCostSummary,
-  WorkflowName,
-  WritingContextPacket,
+  ProviderUsage,
 } from '@openwriter/core';
 import { DirectorySelector } from './DirectorySelector.js';
 import { ModelConfig } from './ModelConfig.js';
@@ -48,44 +25,20 @@ import type {
   WorkbenchNotice,
 } from './types.js';
 import { MODEL_PROVIDERS } from './types.js';
+import {
+  isExplicitWriteRequest,
+  runWritingAgentTurn,
+  type ParsedAgentTurn,
+} from './writing-agent.js';
 
 const DEFAULT_MAIN_AGENT_MODEL = 'deepseek-chat';
-const DEFAULT_SUBAGENT_MODEL = 'deepseek-v4-flash';
-
-const AGENT_MODEL_CONFIG_KEYS: Record<string, string> = {
-  'context-retriever': 'retriever',
-  'plot-architect': 'plot_architect',
-  'character-agent': 'character_agent',
-  'worldbuilding-agent': 'worldbuilding_agent',
-  'prose-writer': 'prose_writer',
-  'continuity-checker': 'continuity_checker',
-  'style-editor': 'style_editor',
-  critic: 'critic',
-  'memory-curator': 'memory_curator',
-  'patch-agent': 'patch_agent',
-};
-
-const AGENT_DESCRIPTIONS: Record<string, string> = {
-  'context-retriever': 'load relevant canon, drafts, and cache-stable context',
-  'plot-architect': 'reason about plot structure, causality, pacing, and setup',
-  'character-agent': 'check motivation, relationships, and character arcs',
-  'worldbuilding-agent': 'check setting rules and world consistency',
-  'prose-writer': 'draft prose as the lead writer',
-  'continuity-checker': 'verify canon, timeline, and contradiction risks',
-  'style-editor': 'review voice, prose style, repetition, and AI-like phrasing',
-  critic: 'broad review across structure, character, pacing, setting, and prose',
-  'memory-curator': 'summarize memory/canon changes',
-  'patch-agent': 'prepare file patch output',
-};
 
 type ScreenMode = 'config' | 'directory' | 'workbench';
 
-interface ParsedWorkflow {
-  workflow: WorkflowName;
-  task: string;
-  label: string;
-  extraContent?: string;
-  targetFile?: string;
+interface UserRuntimeConfig {
+  activeProvider?: ProviderId;
+  providers?: Partial<Record<ProviderId, ModelRuntimeConfig>>;
+  lastWorkspace?: string;
 }
 
 interface WorkbenchState {
@@ -100,27 +53,39 @@ interface WorkbenchState {
   runs: AgentRunRecord[];
   notices: WorkbenchNotice[];
   activeRunId: number | null;
+  /** AbortController for the currently running agent turn */
+  abortController: AbortController | null;
   projectConfig: ProjectConfig | null;
+  sessionUsage: AgentRunRecord['usage'] | null;
 }
 
 export function ChatInterface() {
   const { exit } = useApp();
   const { stdout } = useStdout();
   const initialModel = detectInitialModel();
-  const [state, setState] = useState<WorkbenchState>(() => ({
-    mode: initialModel ? 'directory' : 'config',
-    model: initialModel?.model ?? null,
-    apiKey: initialModel?.apiKey ?? null,
-    provider: initialModel?.provider ?? null,
-    baseUrl: initialModel?.baseUrl ?? null,
-    modelDisplayName: initialModel?.displayName ?? null,
-    workDir: process.cwd(),
-    input: '',
-    runs: [],
-    notices: [],
-    activeRunId: null,
-    projectConfig: readProjectConfig(process.cwd()),
-  }));
+  const initialWorkspace = detectInitialWorkspace();
+  const [exitArmedAt, setExitArmedAt] = useState<number | null>(null);
+  const [state, setState] = useState<WorkbenchState>(() => {
+    const workDir = initialWorkspace ?? process.cwd();
+    if (workDir !== process.cwd()) process.chdir(workDir);
+    const projectConfig = readProjectConfig(workDir);
+    return {
+      mode: initialModel ? (initialWorkspace ? 'workbench' : 'directory') : 'config',
+      model: initialModel?.model ?? null,
+      apiKey: initialModel?.apiKey ?? null,
+      provider: initialModel?.provider ?? null,
+      baseUrl: initialModel?.baseUrl ?? null,
+      modelDisplayName: initialModel?.displayName ?? null,
+      workDir,
+      input: '',
+      runs: [],
+      notices: initialWorkspace ? [{ tone: 'info', text: `workspace: ${workDir}` }] : [],
+      activeRunId: null,
+      abortController: null,
+      projectConfig,
+      sessionUsage: null,
+    };
+  });
 
   const terminalWidth = stdout?.columns ?? 100;
   const latestRun = state.runs[state.runs.length - 1];
@@ -135,7 +100,21 @@ export function ChatInterface() {
 
   useInput((input, key) => {
     if (key.ctrl && input === 'c') exit();
-    if (state.mode === 'workbench' && key.escape) exit();
+    if (state.mode === 'workbench' && key.escape) {
+      // If an agent turn is running, abort it instead of quitting
+      if (running && state.abortController) {
+        state.abortController.abort();
+        pushNotice({ tone: 'warning', text: 'aborting current turn...' });
+        return;
+      }
+      const now = Date.now();
+      if (exitArmedAt && now - exitArmedAt < 2000) {
+        exit();
+        return;
+      }
+      setExitArmedAt(now);
+      pushNotice({ tone: 'warning', text: 'press Esc again to quit' });
+    }
   });
 
   const pushNotice = useCallback((notice: WorkbenchNotice) => {
@@ -146,9 +125,8 @@ export function ChatInterface() {
   }, []);
 
   const handleModelConfig = useCallback((config: ModelRuntimeConfig) => {
-    if (config.envKey && config.apiKey) {
-      process.env[config.envKey] = config.apiKey;
-    }
+    applyRuntimeEnv(config);
+    saveUserModelConfig(config);
     setState(prev => ({
       ...prev,
       model: config.model,
@@ -156,13 +134,21 @@ export function ChatInterface() {
       provider: config.provider,
       baseUrl: config.baseUrl,
       modelDisplayName: config.displayName,
-      mode: 'directory',
+      mode: prev.projectConfig ? 'workbench' : 'directory',
+    }));
+  }, []);
+
+  const handleConfigCancel = useCallback(() => {
+    setState(prev => ({
+      ...prev,
+      mode: prev.projectConfig ? 'workbench' : 'directory',
     }));
   }, []);
 
   const handleDirectorySelect = useCallback((dir: string) => {
     const resolved = resolve(dir);
     process.chdir(resolved);
+    saveUserWorkspaceConfig(resolved);
     setState(prev => ({
       ...prev,
       workDir: resolved,
@@ -183,7 +169,7 @@ export function ChatInterface() {
       return;
     }
 
-    const parsed = parseWorkflowInput(input, state.workDir);
+    const parsed = parseAgentInput(input);
     if (!parsed) {
       pushNotice({
         tone: 'warning',
@@ -193,11 +179,17 @@ export function ChatInterface() {
       return;
     }
 
-    await runWorkflow(parsed, state, setState, pushNotice);
+    await runAgentTurn(parsed, state, setState, pushNotice);
   }, [exit, pushNotice, running, state]);
 
   if (state.mode === 'config') {
-    return <ModelConfig onConfig={handleModelConfig} />;
+    return (
+      <ModelConfig
+        onConfig={handleModelConfig}
+        onCancel={handleConfigCancel}
+        canCancel={Boolean(state.provider && state.model)}
+      />
+    );
   }
 
   if (state.mode === 'directory') {
@@ -214,11 +206,11 @@ export function ChatInterface() {
 
       <Box flexDirection={terminalWidth >= 110 ? 'row' : 'column'} flexGrow={1}>
         <Box flexDirection="column" width={terminalWidth >= 110 ? '70%' : '100%'} paddingRight={terminalWidth >= 110 ? 1 : 0}>
-          <RunTimeline runs={state.runs} />
+          <Conversation runs={state.runs} />
         </Box>
 
         <Box flexDirection="column" width={terminalWidth >= 110 ? '30%' : '100%'}>
-          <SidePanel run={latestRun} notices={state.notices} />
+          <SidePanel notices={state.notices} />
         </Box>
       </Box>
 
@@ -227,21 +219,29 @@ export function ChatInterface() {
         status={status}
         model={state.modelDisplayName ?? state.model ?? 'not configured'}
         running={running}
+        sessionUsage={state.sessionUsage}
       />
 
       <Box borderStyle="single" borderColor={running ? 'yellow' : 'cyan'} paddingX={1}>
         {running ? (
           <Box>
             <Spinner type="dots" />
-            <Text color="yellow"> agent loop is running...</Text>
+            <Text color="yellow"> thinking...</Text>
           </Box>
         ) : (
-          <TextInput
-            value={state.input}
-            onChange={(value) => setState(prev => ({ ...prev, input: value }))}
-            onSubmit={handleSubmit}
-            placeholder="/write next scene | /check continuity | /brainstorm ideas | /help"
-          />
+          <Box>
+            <Text color="cyan">{'> '}</Text>
+            <TextInput
+              value={state.input}
+              onChange={(value) => {
+                setExitArmedAt(null);
+                setState(prev => ({ ...prev, input: value }));
+              }}
+              onSubmit={handleSubmit}
+              placeholder="/write next scene | /check continuity | /brainstorm ideas | /help"
+              showCursor={false}
+            />
+          </Box>
         )}
       </Box>
     </Box>
@@ -263,50 +263,50 @@ function Header({ model, workDir, project }: { model: string; workDir: string; p
   );
 }
 
-function RunTimeline({ runs }: { runs: AgentRunRecord[] }) {
+function Conversation({ runs }: { runs: AgentRunRecord[] }) {
   const visibleRuns = runs.slice(-5);
   if (visibleRuns.length === 0) {
     return (
       <Box borderStyle="round" borderColor="gray" paddingX={1} flexDirection="column">
         <Text color="cyan">Waiting for a task</Text>
-        <Text dimColor>The loop will choose only the agents needed for this turn.</Text>
+        <Text dimColor>Type naturally. OpenWriter reads the workspace and edits only when you ask.</Text>
       </Box>
     );
   }
 
   return (
     <Box flexDirection="column">
-      {visibleRuns.map(run => (
-        <RunCard key={run.id} run={run} />
+      {visibleRuns.map((run, index) => (
+        <ConversationTurn
+          key={run.id}
+          run={run}
+          isLatest={index === visibleRuns.length - 1}
+        />
       ))}
     </Box>
   );
 }
 
-function RunCard({ run }: { run: AgentRunRecord }) {
+function ConversationTurn({ run, isLatest }: { run: AgentRunRecord; isLatest: boolean }) {
   const borderColor = run.status === 'failed' ? 'red' : run.status === 'running' ? 'yellow' : 'green';
+  const completed = run.steps.filter(step => step.status === 'done').length;
+  const activeStep = run.steps.find(step => step.status === 'running');
+  const outputLines = run.output ? visibleOutputLines(run.output, run.status, isLatest) : [];
   return (
     <Box borderStyle="round" borderColor={borderColor} paddingX={1} marginBottom={1} flexDirection="column">
       <Box justifyContent="space-between">
-        <Text bold color={borderColor}>{statusGlyph(run.status)} {run.workflow}</Text>
+        <Text bold color="cyan">{'> '}{run.task}</Text>
         <Text dimColor>{run.durationMs ? `${formatDuration(run.durationMs)}` : 'running'}</Text>
       </Box>
-      <Text>{run.task}</Text>
-      {run.rationale?.length ? (
+      {run.status === 'running' && (
+        <Text color="yellow">
+          {'thinking'}{activeStep ? `: ${formatAgentName(activeStep.agent)}` : ''} ({completed}/{run.steps.length})
+        </Text>
+      )}
+      {run.thought && run.status !== 'running' && <Text dimColor>{run.thought}</Text>}
+      {outputLines.length > 0 && (
         <Box marginTop={1} flexDirection="column">
-          <Text color="cyan">loop plan</Text>
-          {run.rationale.slice(0, 4).map((line, index) => (
-            <Text key={`${run.id}-reason-${index}`} dimColor>{line}</Text>
-          ))}
-        </Box>
-      ) : null}
-      <Box marginTop={1} flexDirection="column">
-        {run.steps.map(step => <AgentStepRow key={step.agent} step={step} />)}
-      </Box>
-      {run.output && (
-        <Box marginTop={1} flexDirection="column">
-          <Text color="cyan">result</Text>
-          {run.output.split('\n').slice(0, 10).map((line, index) => (
+          {outputLines.map((line, index) => (
             <Text key={`${run.id}-out-${index}`}>{line || ' '}</Text>
           ))}
         </Box>
@@ -316,59 +316,13 @@ function RunCard({ run }: { run: AgentRunRecord }) {
   );
 }
 
-function AgentStepRow({ step }: { step: AgentRunStep }) {
-  const color = step.status === 'failed'
-    ? 'red'
-    : step.status === 'running'
-      ? 'yellow'
-      : step.status === 'done'
-        ? 'green'
-        : 'gray';
-
-  return (
-    <Box flexDirection="column" marginBottom={1}>
-      <Box>
-        <Text color={color}>{statusGlyph(step.status)} </Text>
-        {step.phase && <Text color="magenta">{step.phase} </Text>}
-        <Text bold>{step.agent}</Text>
-        <Text dimColor> - {step.description}</Text>
-        {step.durationMs !== undefined && <Text dimColor> {formatDuration(step.durationMs)}</Text>}
-      </Box>
-      {(step.reason || step.summary || step.cacheLabel || step.costLabel || step.error) && (
-        <Box marginLeft={2} flexDirection="column">
-          {step.reason && <Text dimColor>{step.reason}</Text>}
-          {step.summary && <Text>{step.summary}</Text>}
-          <Box>
-            {step.cacheLabel && <Text color="cyan">{step.cacheLabel}</Text>}
-            {step.cacheLabel && step.costLabel && <Text dimColor> | </Text>}
-            {step.costLabel && <Text color="green">{step.costLabel}</Text>}
-          </Box>
-          {step.error && <Text color="red">{step.error}</Text>}
-        </Box>
-      )}
-    </Box>
-  );
-}
-
-function SidePanel({ run, notices }: { run?: AgentRunRecord; notices: WorkbenchNotice[] }) {
+function SidePanel({ notices }: { notices: WorkbenchNotice[] }) {
   return (
     <Box flexDirection="column">
       <Box borderStyle="round" borderColor="blue" paddingX={1} flexDirection="column">
         <Text bold color="blue">Session</Text>
-        {run ? (
-          <>
-            <Text>workflow: {run.workflow}</Text>
-            <Text>status: {run.status}</Text>
-            <Text>agents: {run.steps.filter(s => s.status === 'done').length}/{run.steps.length}</Text>
-            <Text>cache: {formatRunCache(run)}</Text>
-            <Text>cost: {formatRunCost(run)}</Text>
-            {run.skippedAgents?.length ? (
-              <Text dimColor>skipped: {run.skippedAgents.slice(0, 4).join(', ')}</Text>
-            ) : null}
-          </>
-        ) : (
-          <Text dimColor>no run yet</Text>
-        )}
+        <Text dimColor>Esc twice quits</Text>
+        <Text dimColor>/details shows run internals</Text>
       </Box>
 
       <Box borderStyle="round" borderColor="gray" paddingX={1} marginTop={1} flexDirection="column">
@@ -379,8 +333,8 @@ function SidePanel({ run, notices }: { run?: AgentRunRecord; notices: WorkbenchN
         <Text dimColor>/brainstorm task</Text>
         <Text dimColor>/style file</Text>
         <Text dimColor>/save path</Text>
-        <Text dimColor>/provider id | /model id</Text>
-        <Text dimColor>/cd path | /clear</Text>
+        <Text dimColor>/config | /provider id | /model id</Text>
+        <Text dimColor>/details | /cd path | /clear</Text>
       </Box>
 
       {notices.length > 0 && (
@@ -397,65 +351,112 @@ function SidePanel({ run, notices }: { run?: AgentRunRecord; notices: WorkbenchN
   );
 }
 
+function visibleOutputLines(output: string, status: AgentRunStatus, isLatest: boolean): string[] {
+  const lines = output.split('\n');
+  if (status === 'running') return tailLines(lines, 30);
+  if (!isLatest) return headLines(lines, 12);
+  if (isDiffPreview(output)) return compactDiffLines(lines, 180);
+  return lines;
+}
+
+function tailLines(lines: string[], maxLines: number): string[] {
+  if (lines.length <= maxLines) return lines;
+  return [
+    `... ${lines.length - maxLines} earlier lines`,
+    ...lines.slice(-maxLines),
+  ];
+}
+
+function headLines(lines: string[], maxLines: number): string[] {
+  if (lines.length <= maxLines) return lines;
+  return [
+    ...lines.slice(0, maxLines),
+    `... ${lines.length - maxLines} more lines`,
+  ];
+}
+
+function compactDiffLines(lines: string[], maxLines: number): string[] {
+  if (lines.length <= maxLines) return lines;
+  const headCount = Math.max(20, Math.floor(maxLines * 0.6));
+  const tailCount = Math.max(10, maxLines - headCount);
+  return [
+    ...lines.slice(0, headCount),
+    `... ${lines.length - headCount - tailCount} diff lines hidden`,
+    ...lines.slice(-tailCount),
+  ];
+}
+
+function isDiffPreview(output: string): boolean {
+  return output.includes('\n--- ') && output.includes('\n+++ ');
+}
+
 function Footer({
   run,
   status,
   model,
   running,
+  sessionUsage,
 }: {
   run?: AgentRunRecord;
   status: string;
   model: string;
   running: boolean;
+  sessionUsage: AgentRunRecord['usage'] | null;
 }) {
   return (
     <Box paddingX={1} justifyContent="space-between">
       <Box>
-        <Text color="cyan">agent-loop</Text>
+        <Text color="cyan">lead-agent</Text>
         <Text dimColor> | {model} | {status}</Text>
       </Box>
       <Box>
         {running && <Text color="yellow">working </Text>}
-        <Text color="cyan">{run ? formatRunCache(run) : 'cache n/a'}</Text>
-        <Text dimColor> | </Text>
-        <Text color="green">{run ? formatRunCost(run) : 'cost n/a'}</Text>
+        <Text color="cyan">{sessionUsage ? formatUsageCache(sessionUsage) : 'cache n/a'}</Text>
+        <Text dimColor> | session </Text>
+        <Text color="green">{sessionUsage ? formatUsageCost(sessionUsage) : 'cost n/a'}</Text>
       </Box>
     </Box>
   );
 }
 
-async function runWorkflow(
-  parsed: ParsedWorkflow,
+async function runAgentTurn(
+  parsed: ParsedAgentTurn,
   state: WorkbenchState,
   setState: React.Dispatch<React.SetStateAction<WorkbenchState>>,
   pushNotice: (notice: WorkbenchNotice) => void,
 ) {
   const config = readProjectConfig(state.workDir);
-  if (!config) {
-    pushNotice({ tone: 'error', text: 'openwriter.yaml not found. Run /init <project-name> first.' });
-    setState(prev => ({ ...prev, input: '' }));
-    return;
-  }
-
-  const context = buildContextPacket(config, parsed.task, parsed.extraContent);
-  const plan = planAgentLoop(parsed.workflow, context);
   const runId = Date.now();
   const startedAt = Date.now();
   const run: AgentRunRecord = {
     id: runId,
-    workflow: plan.label,
+    workflow: parsed.label,
     task: parsed.task,
     status: 'running',
     startedAt,
-    steps: createInitialSteps(plan),
-    rationale: plan.rationale,
-    skippedAgents: plan.skippedAgents,
+    steps: [{
+      agent: 'lead-agent',
+      description: 'reason about the request and decide whether tools are needed',
+      phase: 'think',
+      role: 'lead',
+      reason: parsed.allowWrites ? 'write tools enabled by explicit user intent' : 'read-only unless the user asks for edits',
+      status: 'running',
+      startedAt,
+    }],
+    rationale: [
+      parsed.allowWrites
+        ? 'File writes can only happen through explicit write/edit tool calls.'
+        : 'This turn exposes read-only tools, so checks and analysis cannot edit files.',
+    ],
   };
 
+  // Create AbortController for this turn
+  const abortController = new AbortController();
   setState(prev => ({
     ...prev,
     input: '',
     activeRunId: runId,
+    abortController,
     runs: [...prev.runs, run],
     projectConfig: config,
   }));
@@ -465,74 +466,81 @@ async function runWorkflow(
 
   try {
     const provider = createConfiguredProvider(state);
-    const orchestrator = createWritingOrchestrator(provider);
-    const mainModel = state.model ?? config.models?.main_agent ?? DEFAULT_MAIN_AGENT_MODEL;
-    const agentModels = resolveAgentModels(plan.steps, config, mainModel);
-
-    const results = await orchestrator.executeCustomPipeline(plan.steps, context, {
-      model: mainModel,
-      agentModels,
-      apiKey: state.apiKey ?? undefined,
-      baseUrl: state.baseUrl ?? undefined,
-      quiet: true,
-      observer: {
-        onAgentStart: event => {
+    let streamedOutput = '';
+    const result = await runWritingAgentTurn({
+      provider,
+      workDir: state.workDir,
+      task: parsed.task,
+      allowWrites: parsed.allowWrites,
+      modeHint: parsed.modeHint,
+      projectConfig: config,
+      signal: abortController.signal,
+      callbacks: {
+        onThought: thought => {
           setState(prev => updateRun(prev, runId, current => ({
             ...current,
-            steps: current.steps.map(step => step.agent === event.agent
-              ? { ...step, status: 'running', startedAt: Date.now() }
-              : step),
+            thought,
           })));
         },
-        onAgentComplete: event => {
-          const estimate = event.result
-            ? summarizeUsageCosts({ [event.agent]: event.result }, agentModels[event.agent] ?? mainModel).estimates[0]
-            : undefined;
+        onToolStart: (name, args) => {
+          const stepStartedAt = Date.now();
           setState(prev => updateRun(prev, runId, current => ({
             ...current,
-            steps: current.steps.map(step => step.agent === event.agent
-              ? {
-                ...step,
-                status: 'done',
-                durationMs: event.durationMs,
-                summary: event.result ? summarizeAgentResult(event.result) : undefined,
-                cacheLabel: formatCacheSnapshot(getCacheSnapshot(event.result)),
-                costLabel: estimate ? formatEstimate(estimate) : undefined,
-              }
-              : step),
+            thought: `tool: ${name}`,
+            steps: [
+              ...completeRunningSteps(current.steps, stepStartedAt),
+              {
+                agent: `tool:${name}`,
+                description: formatToolDescription(name, args),
+                phase: 'tool',
+                role: 'tool',
+                status: 'running',
+                startedAt: stepStartedAt,
+              },
+            ],
           })));
         },
-        onAgentError: event => {
+        onToolEnd: (name, toolResult) => {
+          const endedAt = Date.now();
           setState(prev => updateRun(prev, runId, current => ({
             ...current,
-            status: 'failed',
-            error: errorMessage(event.error),
-            steps: current.steps.map(step => step.agent === event.agent
-              ? {
-                ...step,
-                status: 'failed',
-                durationMs: event.durationMs,
-                error: errorMessage(event.error),
-              }
-              : step),
+            steps: completeLatestStep(current.steps, `tool:${name}`, endedAt, {
+              summary: toolResult.summary,
+              error: toolResult.ok ? undefined : toolResult.content,
+            }),
+          })));
+        },
+        onTextDelta: delta => {
+          streamedOutput += delta;
+          setState(prev => updateRun(prev, runId, current => ({
+            ...current,
+            output: streamedOutput,
+            thought: 'answering...',
           })));
         },
       },
     });
 
-    const workflowOutput = buildWorkflowOutput(parsed.workflow, results);
-    const persistedOutput = persistWorkflowOutput(parsed, state.workDir, workflowOutput);
-    const usage = summarizeUsageCosts(results, mainModel);
+    const output = result.diffs.length
+      ? appendDiffPreview(result.content, result.diffs)
+      : result.content;
+    const runUsage = toRunUsage(result.usage);
+    const sessionUsage = runUsage ? mergeUsage(state.sessionUsage, runUsage) : state.sessionUsage;
     setState(prev => updateRun(prev, runId, current => ({
       ...current,
       status: 'done',
       durationMs: Date.now() - startedAt,
-      output: persistedOutput ?? workflowOutput,
-      usage: toRunUsage(usage),
-    }), { activeRunId: null }));
+      steps: completeRunningSteps(current.steps, Date.now()),
+      output,
+      usage: runUsage,
+      thought: result.diffs.length ? 'edited via file tools' : 'answered',
+    }), {
+      activeRunId: null,
+      sessionUsage,
+    }));
     pushNotice({
       tone: 'success',
-      text: persistedOutput ? `${parsed.label} wrote ${parsed.targetFile}` : `${parsed.label} completed`,
+      text: result.diffs.length ? `${parsed.label} edited files` : `${parsed.label} completed`,
     });
   } catch (error) {
     setState(prev => updateRun(prev, runId, current => ({
@@ -547,41 +555,12 @@ async function runWorkflow(
   }
 }
 
-function createWritingOrchestrator(provider: LLMProvider): Orchestrator {
-  const orchestrator = new Orchestrator();
-  orchestrator.register(new ContextRetriever());
-  orchestrator.register(new ProseWriter(provider));
-  orchestrator.register(new ContinuityChecker(provider));
-  orchestrator.register(new Critic(provider));
-  orchestrator.register(new MemoryCurator(provider));
-  orchestrator.register(new CharacterAgent(provider));
-  orchestrator.register(new PlotArchitect(provider));
-  orchestrator.register(new WorldbuildingAgent(provider));
-  orchestrator.register(new StyleEditor(provider));
-  orchestrator.register(new PatchAgent());
-  return orchestrator;
-}
-
-function resolveAgentModels(
-  steps: AgentLoopPlan['steps'],
-  config: ProjectConfig,
-  mainModel: string,
-): Record<string, string> {
-  const modelConfig = config.models ?? {};
-  const subagentDefault = modelConfig.subagent_default ?? DEFAULT_SUBAGENT_MODEL;
-  return Object.fromEntries(steps.map(step => {
-    const key = AGENT_MODEL_CONFIG_KEYS[step.agent] ?? step.agent.replace(/-/g, '_');
-    const configured = modelConfig[key] ?? modelConfig[step.agent];
-    const model = configured ?? (step.role === 'lead' ? mainModel : subagentDefault);
-    return [step.agent, model];
-  }));
-}
-
 function createConfiguredProvider(state: WorkbenchState): LLMProvider {
-  const provider = createProvider('deepseek');
+  const providerName = state.provider ?? 'deepseek';
+  const provider = createProvider(providerName);
   return withProviderDefaults(provider, {
     apiKey: state.apiKey ?? undefined,
-    baseUrl: state.baseUrl ?? 'https://api.deepseek.com',
+    baseUrl: state.baseUrl ?? (providerName === 'deepseek' ? 'https://api.deepseek.com' : undefined),
     model: state.model ?? DEFAULT_MAIN_AGENT_MODEL,
   });
 }
@@ -591,36 +570,10 @@ function withProviderDefaults(provider: LLMProvider, defaults: ProviderConfig): 
     name: provider.name,
     chat: (messages, config) => provider.chat(messages, { ...defaults, ...config }),
     chatJson: (messages, schema, config) => provider.chatJson(messages, schema, { ...defaults, ...config }),
+    chatWithTools: provider.chatWithTools
+      ? (messages, tools, config) => provider.chatWithTools!(messages, tools, { ...defaults, ...config })
+      : undefined,
     getLastUsage: provider.getLastUsage?.bind(provider),
-  };
-}
-
-function buildContextPacket(
-  config: ProjectConfig,
-  task: string,
-  extraContent?: string,
-): WritingContextPacket {
-  return {
-    task,
-    projectProfile: {
-      name: config.project.name,
-      language: config.project.language,
-      genre: config.project.genre,
-      sourceOfTruth: config.project.sourceOfTruth,
-      draftDirs: config.project.draftDirs,
-      style: config.style as StyleProfile,
-      memory: config.memory,
-      retrieval: config.retrieval,
-      cache: config.cache,
-    },
-    relevantCanon: [],
-    relevantDrafts: extraContent ? [{ source: 'input', content: extraContent }] : [],
-    deprecatedItems: [],
-    openQuestions: [],
-    constraints: [
-      config.writing.allowNewCanonWithoutConfirmation ? '' : 'Do not introduce major canon without confirmation.',
-      config.writing.allowMajorPlotChangeWithoutConfirmation ? '' : 'Do not change the core plot direction without confirmation.',
-    ].filter(Boolean),
   };
 }
 
@@ -644,13 +597,30 @@ function handleLocalCommand(
     case 'help':
       pushNotice({
         tone: 'info',
-        text: '/write /check /brainstorm /style /setting /plan /save /init /cd /provider /model /clear /quit',
+        text: '/write /check /brainstorm /style /setting /plan /save /details /config /provider /model /clear /quit',
       });
       setState(prev => ({ ...prev, input: '' }));
       return true;
-    case 'clear':
-      setState(prev => ({ ...prev, input: '', runs: [], notices: [] }));
+    case 'config':
+    case 'settings':
+      setState(prev => ({ ...prev, input: '', mode: 'config' }));
       return true;
+    case 'clear':
+      setState(prev => ({ ...prev, input: '', runs: [], notices: [], sessionUsage: null }));
+      return true;
+    case 'details': {
+      const latestRun = state.runs.at(-1);
+      if (!latestRun) {
+        pushNotice({ tone: 'info', text: 'no run yet' });
+      } else {
+        pushNotice({
+          tone: latestRun.status === 'failed' ? 'error' : 'info',
+          text: formatRunDetails(latestRun),
+        });
+      }
+      setState(prev => ({ ...prev, input: '' }));
+      return true;
+    }
     case 'save': {
       const latestRun = state.runs.at(-1);
       if (!arg) {
@@ -666,18 +636,35 @@ function handleLocalCommand(
     }
     case 'provider': {
       const provider = MODEL_PROVIDERS.find(item => item.id === arg || item.provider === arg);
-      if (!provider || provider.custom) {
-        pushNotice({ tone: 'warning', text: 'only provider supported: deepseek' });
+      if (!provider) {
+        pushNotice({ tone: 'warning', text: 'available providers: deepseek, custom' });
       } else {
-        const model = provider.models[0]?.id ?? state.model ?? DEFAULT_MAIN_AGENT_MODEL;
+        const saved = loadSavedProviderConfig(provider.provider);
+        const apiKey = saved?.apiKey ?? (provider.envKey ? process.env[provider.envKey] : undefined);
+        if (provider.apiKeyRequired && !apiKey) {
+          pushNotice({ tone: 'warning', text: `run /config to set ${provider.name}` });
+          setState(prev => ({ ...prev, input: '' }));
+          return true;
+        }
+        const model = saved?.model ?? provider.models[0]?.id ?? DEFAULT_MAIN_AGENT_MODEL;
+        const nextConfig: ModelRuntimeConfig = {
+          provider: provider.provider,
+          model,
+          baseUrl: saved?.baseUrl ?? provider.baseUrl,
+          apiKey,
+          envKey: provider.envKey,
+          displayName: `${provider.name} / ${model}`,
+        };
+        applyRuntimeEnv(nextConfig);
+        saveUserModelConfig(nextConfig);
         setState(prev => ({
           ...prev,
           input: '',
-          provider: provider.provider,
+          provider: nextConfig.provider,
           model,
-          baseUrl: provider.baseUrl,
-          apiKey: provider.envKey ? process.env[provider.envKey] ?? prev.apiKey : null,
-          modelDisplayName: `${provider.name} / ${model}`,
+          baseUrl: nextConfig.baseUrl,
+          apiKey: apiKey ?? null,
+          modelDisplayName: nextConfig.displayName,
         }));
         pushNotice({ tone: 'success', text: `provider set to ${provider.name}` });
       }
@@ -687,10 +674,20 @@ function handleLocalCommand(
       if (!arg) {
         pushNotice({ tone: 'warning', text: 'usage: /model <model-id>' });
       } else {
+        const provider = state.provider ?? 'deepseek';
+        const nextConfig: ModelRuntimeConfig = {
+          provider,
+          model: arg,
+          baseUrl: state.baseUrl ?? (provider === 'deepseek' ? 'https://api.deepseek.com' : ''),
+          apiKey: state.apiKey ?? undefined,
+          envKey: provider === 'deepseek' ? 'DEEPSEEK_API_KEY' : 'OPENAI_API_KEY',
+          displayName: `${provider} / ${arg}`,
+        };
+        saveUserModelConfig(nextConfig);
         setState(prev => ({
           ...prev,
           model: arg,
-          modelDisplayName: `${prev.provider ?? 'provider'} / ${arg}`,
+          modelDisplayName: nextConfig.displayName,
           input: '',
         }));
         pushNotice({ tone: 'success', text: `model switched to ${arg}` });
@@ -702,6 +699,7 @@ function handleLocalCommand(
         pushNotice({ tone: 'error', text: `directory not found: ${target}` });
       } else {
         process.chdir(target);
+        saveUserWorkspaceConfig(target);
         setState(prev => ({
           ...prev,
           input: '',
@@ -724,81 +722,69 @@ function handleLocalCommand(
   }
 }
 
-function parseWorkflowInput(input: string, workDir: string): ParsedWorkflow | null {
+function parseAgentInput(input: string): ParsedAgentTurn | null {
   if (input.startsWith('/')) {
     const [command, ...rest] = input.slice(1).split(/\s+/);
     const task = rest.join(' ').trim();
     switch (command) {
       case 'write':
       case 'w':
-        return parseTargetedCommand('chapterWriting', task, workDir, 'write', 'continue writing');
+        return {
+          label: 'write',
+          task: task || 'continue writing',
+          allowWrites: true,
+          modeHint: 'The user explicitly invoked /write. Edit files only through write_file or edit_file, and ask if the target is unclear.',
+        };
       case 'check':
-        return { workflow: 'continuityCheck', task: task || 'check project continuity', label: 'check' };
+        return {
+          label: 'check',
+          task: task || 'check the project',
+          allowWrites: false,
+          modeHint: 'Read-only continuity, structure, and consistency check. Do not modify files.',
+        };
       case 'brainstorm':
       case 'ideas':
-        return { workflow: 'brainstorm', task: task || 'brainstorm plot or setting ideas', label: 'brainstorm' };
+        return {
+          label: 'brainstorm',
+          task: task || 'brainstorm ideas',
+          allowWrites: isExplicitWriteRequest(task),
+          modeHint: 'Brainstorm naturally. Save or edit files only if the user explicitly asked for that.',
+        };
       case 'style':
       case 'polish':
       case 'revise':
-        return parsePolishCommand(command, task, workDir);
+        return {
+          label: command === 'style' ? 'style' : command,
+          task: task || (command === 'style' ? 'review style' : 'revise text'),
+          allowWrites: command !== 'style' || isExplicitWriteRequest(task),
+          modeHint: command === 'style'
+            ? 'Style review by default. If the user only named a file, read it and give notes instead of editing.'
+            : 'The user requested revision/polish. Use edit_file only after reading the target file.',
+        };
       case 'setting':
-        return { workflow: 'setting', task: task || 'expand setting', label: 'setting' };
+        return {
+          label: 'setting',
+          task: task || 'work on setting',
+          allowWrites: isExplicitWriteRequest(task),
+          modeHint: 'Handle setting/worldbuilding in the existing workspace structure. Do not assume any fixed folder layout.',
+        };
       case 'plan':
-        return parseTargetedCommand('chapterWriting', task, workDir, 'plan', 'plan chapter structure');
+        return {
+          label: 'plan',
+          task: task || 'plan structure',
+          allowWrites: isExplicitWriteRequest(task),
+          modeHint: 'Planning is read-only unless the user explicitly asks to write the plan to a file.',
+        };
       default:
         return null;
     }
   }
 
-  return { workflow: 'chapterWriting', task: input, label: 'write' };
-}
-
-function parsePolishCommand(command: string, task: string, workDir: string): ParsedWorkflow {
-  const parsed = parseTargetedCommand('polish', task, workDir, command === 'style' ? 'style' : 'polish', 'polish text');
   return {
-    ...parsed,
-    task: parsed.task || (command === 'style' ? 'review style' : 'polish text'),
+    label: 'agent',
+    task: input,
+    allowWrites: isExplicitWriteRequest(input),
   };
-}
-
-function parseTargetedCommand(
-  workflow: WorkflowName,
-  task: string,
-  workDir: string,
-  label: string,
-  defaultTask: string,
-): ParsedWorkflow {
-  const [maybeFile, ...rest] = task.split(/\s+/);
-  const targetFile = maybeFile && looksLikeTextFile(maybeFile) ? maybeFile : undefined;
-  if (!targetFile) {
-    return { workflow, task: task || defaultTask, label };
-  }
-
-  const filePath = resolve(workDir, targetFile);
-  const extraContent = existsSync(filePath) ? readFileSync(filePath, 'utf-8') : undefined;
-  const goal = rest.join(' ').trim();
-  return {
-    workflow,
-    task: goal || defaultTask,
-    label,
-    extraContent,
-    targetFile,
-  };
-}
-
-function looksLikeTextFile(path: string): boolean {
-  return /\.(md|markdown|txt|text|rst|adoc)$/i.test(path);
-}
-
-function createInitialSteps(plan: AgentLoopPlan): AgentRunStep[] {
-  return plan.steps.map(step => ({
-    agent: step.agent,
-    description: AGENT_DESCRIPTIONS[step.agent] ?? 'run agent',
-    phase: step.phase,
-    role: step.role,
-    reason: step.reason,
-    status: 'queued',
-  }));
 }
 
 function updateRun(
@@ -814,113 +800,167 @@ function updateRun(
   };
 }
 
-function summarizeAgentResult(result: AgentResult): string {
-  if (typeof result.content === 'string') return trimLine(result.content, 160);
-
-  const content = result.content as Record<string, unknown>;
-  if (content.packet && content.summary) {
-    return `context ready: ${trimLine(JSON.stringify(content.summary), 140)}`;
-  }
-  if (Array.isArray(result.content)) {
-    return `${result.content.length} items`;
-  }
-  return trimLine(JSON.stringify(result.content), 160);
+function completeRunningSteps(steps: AgentRunStep[], endedAt: number): AgentRunStep[] {
+  return steps.map(step => step.status === 'running'
+    ? {
+      ...step,
+      status: 'done',
+      durationMs: step.startedAt ? endedAt - step.startedAt : undefined,
+    }
+    : step);
 }
 
-function buildWorkflowOutput(workflow: WorkflowName, results: Record<string, AgentResult>): string {
-  const preferred = workflow === 'chapterWriting'
-    ? results['prose-writer']
-    : workflow === 'polish'
-      ? results['style-editor'] ?? results['continuity-checker']
-      : results.critic ?? Object.values(results).at(-1);
-
-  if (!preferred) return 'workflow completed';
-  if (typeof preferred.content === 'string') return preferred.content;
-  return JSON.stringify(preferred.content, null, 2);
-}
-
-function persistWorkflowOutput(parsed: ParsedWorkflow, workDir: string, output: string): string | null {
-  if (!parsed.targetFile) return null;
-
-  const connector = new FileSystemConnector(workDir);
-  const targetPath = resolve(workDir, parsed.targetFile);
-  const before = existsSync(targetPath) ? readFileSync(targetPath, 'utf-8') : '';
-  connector.writeContent(parsed.targetFile, output);
-  const diff = createUnifiedDiff(parsed.targetFile, before, output);
-  return `wrote ${parsed.targetFile}\n\n${diff}`;
-}
-
-function createUnifiedDiff(filePath: string, before: string, after: string): string {
-  const beforeLines = before ? before.split('\n') : [];
-  const afterLines = after ? after.split('\n') : [];
-  const max = Math.max(beforeLines.length, afterLines.length);
-  const lines = [
-    `--- ${before ? filePath : '/dev/null'}`,
-    `+++ ${filePath}`,
-    `@@ -1,${beforeLines.length} +1,${afterLines.length} @@`,
-  ];
-
-  for (let index = 0; index < max; index++) {
-    const oldLine = beforeLines[index];
-    const newLine = afterLines[index];
-    if (oldLine === newLine && oldLine !== undefined) {
-      lines.push(` ${oldLine}`);
-    } else {
-      if (oldLine !== undefined) lines.push(`-${oldLine}`);
-      if (newLine !== undefined) lines.push(`+${newLine}`);
+function completeLatestStep(
+  steps: AgentRunStep[],
+  agent: string,
+  endedAt: number,
+  details: Pick<AgentRunStep, 'summary' | 'error'>,
+): AgentRunStep[] {
+  let index = -1;
+  for (let i = steps.length - 1; i >= 0; i--) {
+    if (steps[i].agent === agent && steps[i].status === 'running') {
+      index = i;
+      break;
     }
   }
-
-  return lines.join('\n');
+  if (index === -1) return steps;
+  return steps.map((step, stepIndex) => stepIndex === index
+    ? {
+      ...step,
+      status: details.error ? 'failed' : 'done',
+      durationMs: step.startedAt ? endedAt - step.startedAt : undefined,
+      summary: details.summary,
+      error: details.error,
+    }
+    : step);
 }
 
-function getCacheSnapshot(result?: AgentResult): CacheSnapshot | undefined {
-  const cache = result?.metadata?.cache;
-  if (!cache || typeof cache !== 'object' || Array.isArray(cache)) return undefined;
-  return cache as CacheSnapshot;
+function formatToolDescription(name: string, args: Record<string, unknown>): string {
+  const path = typeof args.path === 'string' ? args.path : undefined;
+  const query = typeof args.query === 'string' ? args.query : undefined;
+  const pattern = typeof args.pattern === 'string' ? args.pattern : undefined;
+  switch (name) {
+    case 'read_file':
+      return path ? `read ${path}` : 'read file';
+    case 'list_dir':
+      return path ? `list ${path}` : 'list workspace';
+    case 'grep':
+      return query ? `grep ${trimLine(query, 40)}` : 'grep files';
+    case 'glob':
+      return pattern ? `glob ${trimLine(pattern, 40)}` : 'glob files';
+    case 'edit_file':
+      return path ? `edit ${path}` : 'edit file';
+    case 'write_file':
+      return path ? `write ${path}` : 'write file';
+    default:
+      return name;
+  }
 }
 
-function formatCacheSnapshot(cache?: CacheSnapshot): string | undefined {
-  if (!cache) return undefined;
-  return `cache prefix ${cache.immutablePrefixHash.slice(0, 8)} | ctx ~${cache.approxContextTokens} tok`;
+function appendDiffPreview(content: string, diffs: string[]): string {
+  const body = content.trim() || 'Updated files.';
+  return `${body}\n\n${diffs.join('\n\n')}`;
 }
 
-function formatEstimate(estimate: UsageCostEstimate): string {
-  const hit = estimate.cacheHitRate === undefined ? 'n/a' : formatPercent(estimate.cacheHitRate);
-  const cost = estimate.estimatedUsd === undefined ? 'cost n/a' : formatUsd(estimate.estimatedUsd);
-  return `cache ${hit} | ${cost}`;
-}
-
-function toRunUsage(summary: UsageCostSummary): AgentRunRecord['usage'] {
+function toRunUsage(usage?: ProviderUsage): AgentRunRecord['usage'] | undefined {
+  if (!usage) return undefined;
+  const cacheHitTokens = usage.promptCacheHitTokens ?? 0;
+  const cacheMissTokens = usage.promptCacheMissTokens ?? 0;
+  const cacheInputTokens = cacheHitTokens + cacheMissTokens;
   return {
-    cacheHitRate: summary.cacheHitRate,
-    cacheHitTokens: summary.cacheHitTokens,
-    cacheMissTokens: summary.cacheMissTokens,
-    promptTokens: summary.promptTokens,
-    completionTokens: summary.completionTokens,
-    estimatedUsd: summary.estimatedUsd,
-    estimatedSavingsUsd: summary.estimatedSavingsUsd,
+    cacheHitRate: cacheInputTokens > 0 ? cacheHitTokens / cacheInputTokens : undefined,
+    cacheHitTokens,
+    cacheMissTokens,
+    promptTokens: usage.promptTokens ?? 0,
+    completionTokens: usage.completionTokens ?? 0,
   };
 }
 
 function formatRunCache(run: AgentRunRecord): string {
-  const usage = run.usage;
-  if (!usage || usage.cacheHitRate === undefined) return 'cache n/a';
-  return `${formatPercent(usage.cacheHitRate)} hit (${formatInteger(usage.cacheHitTokens)}/${formatInteger(usage.cacheMissTokens)})`;
+  return run.usage ? formatUsageCache(run.usage) : 'cache n/a';
 }
 
 function formatRunCost(run: AgentRunRecord): string {
-  const usage = run.usage;
+  return run.usage ? formatUsageCost(run.usage) : 'cost n/a';
+}
+
+function formatUsageCache(usage: NonNullable<AgentRunRecord['usage']>): string {
+  if (usage.cacheHitRate === undefined) return 'cache n/a';
+  return `${formatPercent(usage.cacheHitRate)} hit`;
+}
+
+function formatUsageCost(usage: NonNullable<AgentRunRecord['usage']>): string {
   if (!usage || usage.estimatedUsd === undefined) return 'cost n/a';
-  const saved = usage.estimatedSavingsUsd ? ` saved ${formatUsd(usage.estimatedSavingsUsd)}` : '';
-  return `${formatUsd(usage.estimatedUsd)}${saved}`;
+  return formatUsd(usage.estimatedUsd);
+}
+
+function mergeUsage(
+  current: AgentRunRecord['usage'] | null,
+  next: NonNullable<AgentRunRecord['usage']>,
+): NonNullable<AgentRunRecord['usage']> {
+  if (!current) return next;
+  const cacheHitTokens = current.cacheHitTokens + next.cacheHitTokens;
+  const cacheMissTokens = current.cacheMissTokens + next.cacheMissTokens;
+  const cacheInputTokens = cacheHitTokens + cacheMissTokens;
+  return {
+    cacheHitTokens,
+    cacheMissTokens,
+    promptTokens: current.promptTokens + next.promptTokens,
+    completionTokens: current.completionTokens + next.completionTokens,
+    cacheHitRate: cacheInputTokens > 0 ? cacheHitTokens / cacheInputTokens : undefined,
+    estimatedUsd: addOptional(current.estimatedUsd, next.estimatedUsd),
+    estimatedSavingsUsd: addOptional(current.estimatedSavingsUsd, next.estimatedSavingsUsd),
+  };
+}
+
+function addOptional(a: number | undefined, b: number | undefined): number | undefined {
+  if (a === undefined && b === undefined) return undefined;
+  return (a ?? 0) + (b ?? 0);
+}
+
+function formatAgentName(agent: string): string {
+  if (agent === 'lead-agent') return 'thinking';
+  if (agent.startsWith('tool:')) return agent.slice('tool:'.length);
+  return agent
+    .replace('context-retriever', 'reading workspace')
+    .replace('prose-writer', 'writing')
+    .replace('continuity-checker', 'checking continuity')
+    .replace('style-editor', 'polishing')
+    .replace('plot-architect', 'planning')
+    .replace('worldbuilding-agent', 'checking setting');
+}
+
+function formatRunDetails(run: AgentRunRecord): string {
+  const steps = run.steps.map(step => `${step.agent}:${step.status}`).join(', ');
+  return `${run.workflow} ${run.status}; ${steps}; ${formatRunCache(run)}; ${formatRunCost(run)}`;
 }
 
 function readProjectConfig(workDir: string): ProjectConfig | null {
   return new FileSystemConnector(workDir).readConfig();
 }
 
+function detectInitialWorkspace(): string | null {
+  const cwd = process.cwd();
+  if (readProjectConfig(cwd)) return cwd;
+
+  const saved = readUserRuntimeConfig().lastWorkspace;
+  if (!saved) return null;
+
+  const resolved = resolve(saved);
+  return existsSync(resolved) ? resolved : null;
+}
+
 function detectInitialModel(): ModelRuntimeConfig | null {
+  const userConfig = readUserRuntimeConfig();
+  const activeProvider = userConfig.activeProvider;
+  if (activeProvider) {
+    const saved = userConfig.providers?.[activeProvider];
+    if (saved?.apiKey) {
+      applyRuntimeEnv(saved);
+      return saved;
+    }
+  }
+
   for (const provider of MODEL_PROVIDERS) {
     if (provider.custom || !provider.envKey) continue;
     const apiKey = process.env[provider.envKey];
@@ -939,16 +979,56 @@ function detectInitialModel(): ModelRuntimeConfig | null {
   return null;
 }
 
-function statusGlyph(status: AgentRunStatus): string {
-  switch (status) {
-    case 'queued':
-      return '.';
-    case 'running':
-      return '*';
-    case 'done':
-      return '+';
-    case 'failed':
-      return 'x';
+function loadSavedProviderConfig(provider: ProviderId): ModelRuntimeConfig | undefined {
+  return readUserRuntimeConfig().providers?.[provider];
+}
+
+function saveUserModelConfig(config: ModelRuntimeConfig): void {
+  const current = readUserRuntimeConfig();
+  const next: UserRuntimeConfig = {
+    ...current,
+    activeProvider: config.provider,
+    providers: {
+      ...(current.providers ?? {}),
+      [config.provider]: config,
+    },
+  };
+  const path = userConfigPath();
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`, 'utf-8');
+}
+
+function saveUserWorkspaceConfig(workDir: string): void {
+  const current = readUserRuntimeConfig();
+  const next: UserRuntimeConfig = {
+    ...current,
+    lastWorkspace: resolve(workDir),
+  };
+  const path = userConfigPath();
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`, 'utf-8');
+}
+
+function readUserRuntimeConfig(): UserRuntimeConfig {
+  const path = userConfigPath();
+  if (!existsSync(path)) return {};
+  try {
+    return JSON.parse(readFileSync(path, 'utf-8')) as UserRuntimeConfig;
+  } catch {
+    return {};
+  }
+}
+
+function userConfigPath(): string {
+  if (process.platform === 'win32') {
+    return join(process.env.APPDATA ?? homedir(), 'OpenWriter', 'config.json');
+  }
+  return join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'openwriter', 'config.json');
+}
+
+function applyRuntimeEnv(config: ModelRuntimeConfig): void {
+  if (config.envKey && config.apiKey) {
+    process.env[config.envKey] = config.apiKey;
   }
 }
 
@@ -987,10 +1067,6 @@ function formatDuration(ms: number): string {
 
 function formatPercent(value: number): string {
   return `${(value * 100).toFixed(1)}%`;
-}
-
-function formatInteger(value: number): string {
-  return new Intl.NumberFormat('en-US').format(value);
 }
 
 function formatUsd(value: number): string {

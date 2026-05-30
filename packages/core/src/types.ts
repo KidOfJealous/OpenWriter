@@ -27,8 +27,8 @@ export interface ProjectProfile {
   name: string;
   language: string;
   genre: string;
-  sourceOfTruth: string[];
-  draftDirs: string[];
+  sourceOfTruth?: string[];
+  draftDirs?: string[];
   style?: StyleProfile;
   memory?: MemoryConfig;
   retrieval?: RetrievalConfig;
@@ -117,6 +117,7 @@ export interface AgentOptions {
   agentModels?: Record<string, string>;
   temperature?: number;
   maxTokens?: number;
+  onTextDelta?: (delta: string) => void;
   quiet?: boolean;
   observer?: WorkflowObserver;
   [key: string]: unknown;
@@ -180,8 +181,11 @@ export interface AgentLoopPlanningOptions {
 // LLM Provider
 
 export interface Message {
-  role: 'system' | 'user' | 'assistant';
+  role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
+  toolCallId?: string;
+  name?: string;
+  toolCalls?: ProviderToolCall[];
 }
 
 export interface ProviderConfig {
@@ -190,6 +194,7 @@ export interface ProviderConfig {
   model?: string;
   temperature?: number;
   maxTokens?: number;
+  onToken?: (token: string) => void;
 }
 
 export interface ProviderUsage {
@@ -198,6 +203,31 @@ export interface ProviderUsage {
   totalTokens?: number;
   promptCacheHitTokens?: number;
   promptCacheMissTokens?: number;
+}
+
+export interface ToolDefinition {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+}
+
+export interface ProviderToolCall {
+  id: string;
+  type: 'function';
+  function: {
+    name: string;
+    arguments: string;
+  };
+  parsedArguments: Record<string, unknown>;
+}
+
+export interface ToolChatResponse {
+  content: string;
+  toolCalls: ProviderToolCall[];
+  usage?: ProviderUsage;
 }
 
 export interface ModelPricing {
@@ -240,6 +270,7 @@ export interface LLMProvider {
   name: string;
   chat(messages: Message[], config?: ProviderConfig): Promise<string>;
   chatJson<T>(messages: Message[], schema: object, config?: ProviderConfig): Promise<T>;
+  chatWithTools?(messages: Message[], tools: ToolDefinition[], config?: ProviderConfig): Promise<ToolChatResponse>;
   getLastUsage?(): ProviderUsage | undefined;
 }
 
@@ -250,8 +281,8 @@ export interface ProjectConfig {
     name: string;
     language: string;
     genre: string;
-    sourceOfTruth: string[];
-    draftDirs: string[];
+    sourceOfTruth?: string[];
+    draftDirs?: string[];
   };
   writing: {
     defaultMode: string;

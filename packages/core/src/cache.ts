@@ -57,6 +57,9 @@ export class AggressiveCacheManager {
 
   prime(context: WritingContextPacket): void {
     this.immutablePrefix = this.buildImmutablePrefix(context);
+    if (context.workflowLog?.length) {
+      this.workflowLog = context.workflowLog.slice(-this.policy.maxWorkflowLogEntries);
+    }
   }
 
   prepareForAgent(context: WritingContextPacket): WritingContextPacket {
@@ -117,6 +120,10 @@ export class AggressiveCacheManager {
 
   getSnapshot(context: WritingContextPacket): CacheSnapshot {
     return this.buildSnapshot(context);
+  }
+
+  getWorkflowLog(): WorkflowLogEntry[] {
+    return this.workflowLog.slice(-this.policy.maxWorkflowLogEntries);
   }
 
   private buildImmutablePrefix(context: WritingContextPacket): string {
