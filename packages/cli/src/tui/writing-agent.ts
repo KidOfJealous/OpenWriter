@@ -86,11 +86,6 @@ interface AgentTool {
   execute(args: Record<string, unknown>): Promise<ToolExecutionResult>;
 }
 
-export function isExplicitWriteRequest(input: string): boolean {
-  return /(?:^|[\s/])(?:write|edit|revise|rewrite|polish|continue|draft|create|add|remove|fix|change|update|save)\b/i.test(input)
-    || /写入|写到|写进|保存|新建|创建|新增|删除|替换|修改|改写|改成|修订|润色|重写|续写|补写|扩写|缩写|调整|整理到|落盘/.test(input);
-}
-
 export interface WritingAgentOptions {
   provider: LLMProvider;
   workDir: string;

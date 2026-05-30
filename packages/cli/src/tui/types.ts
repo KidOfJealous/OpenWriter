@@ -10,17 +10,6 @@ export interface ChatMessage {
   };
 }
 
-export interface ChatState {
-  mode: 'config' | 'directory' | 'chat' | 'executing';
-  messages: ChatMessage[];
-  input: string;
-  currentTask: string | null;
-  model: string | null;
-  apiKey: string | null;
-  workDir: string;
-  projectConfig: { name: string; path: string } | null;
-}
-
 export type AgentRunStatus = 'queued' | 'running' | 'done' | 'failed';
 
 export interface AgentRunStep {

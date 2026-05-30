@@ -3,7 +3,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { LLMProvider, Message, ProviderUsage, ToolChatResponse, ToolDefinition } from '@openwriter/core';
-import { isExplicitWriteRequest, runWritingAgentTurn } from './writing-agent.js';
+import { runWritingAgentTurn } from './writing-agent.js';
 
 class ScriptedProvider implements LLMProvider {
   name = 'scripted';
@@ -117,11 +117,5 @@ describe('writing agent loop', () => {
     expect(result.content).toContain('read');
     expect(result.diffs).toEqual([]);
     expect(readFileSync(file, 'utf-8')).toBe('old draft\n');
-  });
-
-  it('recognizes explicit Chinese write requests as write permission, not routing', () => {
-    expect(isExplicitWriteRequest('检查时间线')).toBe(false);
-    expect(isExplicitWriteRequest('把这一章润色一下')).toBe(true);
-    expect(isExplicitWriteRequest('续写下一段并保存')).toBe(true);
   });
 });

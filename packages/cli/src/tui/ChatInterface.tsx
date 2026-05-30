@@ -26,7 +26,6 @@ import type {
 } from './types.js';
 import { MODEL_PROVIDERS } from './types.js';
 import {
-  isExplicitWriteRequest,
   runWritingAgentTurn,
   type ParsedAgentTurn,
 } from './writing-agent.js';
@@ -536,6 +535,7 @@ async function runAgentTurn(
       thought: result.diffs.length ? 'edited via file tools' : 'answered',
     }), {
       activeRunId: null,
+      abortController: null,
       sessionUsage,
     }));
     pushNotice({
@@ -548,7 +548,7 @@ async function runAgentTurn(
       status: 'failed',
       durationMs: Date.now() - startedAt,
       error: errorMessage(error),
-    }), { activeRunId: null }));
+    }), { activeRunId: null, abortController: null }));
     pushNotice({ tone: 'error', text: errorMessage(error) });
   } finally {
     process.chdir(oldCwd);
@@ -747,7 +747,7 @@ function parseAgentInput(input: string): ParsedAgentTurn | null {
         return {
           label: 'brainstorm',
           task: task || 'brainstorm ideas',
-          allowWrites: isExplicitWriteRequest(task),
+          allowWrites: false,
           modeHint: 'Brainstorm naturally. Save or edit files only if the user explicitly asked for that.',
         };
       case 'style':
@@ -756,7 +756,7 @@ function parseAgentInput(input: string): ParsedAgentTurn | null {
         return {
           label: command === 'style' ? 'style' : command,
           task: task || (command === 'style' ? 'review style' : 'revise text'),
-          allowWrites: command !== 'style' || isExplicitWriteRequest(task),
+          allowWrites: command !== 'style',
           modeHint: command === 'style'
             ? 'Style review by default. If the user only named a file, read it and give notes instead of editing.'
             : 'The user requested revision/polish. Use edit_file only after reading the target file.',
@@ -765,14 +765,14 @@ function parseAgentInput(input: string): ParsedAgentTurn | null {
         return {
           label: 'setting',
           task: task || 'work on setting',
-          allowWrites: isExplicitWriteRequest(task),
+          allowWrites: false,
           modeHint: 'Handle setting/worldbuilding in the existing workspace structure. Do not assume any fixed folder layout.',
         };
       case 'plan':
         return {
           label: 'plan',
           task: task || 'plan structure',
-          allowWrites: isExplicitWriteRequest(task),
+          allowWrites: false,
           modeHint: 'Planning is read-only unless the user explicitly asks to write the plan to a file.',
         };
       default:
@@ -783,7 +783,7 @@ function parseAgentInput(input: string): ParsedAgentTurn | null {
   return {
     label: 'agent',
     task: input,
-    allowWrites: isExplicitWriteRequest(input),
+    allowWrites: false,
   };
 }
 
