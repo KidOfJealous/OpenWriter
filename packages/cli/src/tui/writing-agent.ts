@@ -638,6 +638,7 @@ class WritingToolRuntime {
       }
     };
     walk(canonDir);
+    entries.sort((a, b) => a.source.localeCompare(b.source));
     return entries;
   }
 
@@ -808,6 +809,7 @@ class WritingToolRuntime {
           });
         }
       }
+      drafts.sort((a, b) => a.source.localeCompare(b.source));
       return {
         task,
         projectProfile: this.buildProjectProfile(),
