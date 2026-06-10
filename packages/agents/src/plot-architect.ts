@@ -6,7 +6,6 @@ import type {
   LLMProvider,
 } from '@openwriter/core';
 import { DeepSeekProvider } from '@openwriter/core';
-import { formatWorkflowLog } from './prompt-cache.js';
 
 interface PlotAnalysis {
   issue: string;
@@ -72,7 +71,6 @@ export class PlotArchitect implements WritingAgent {
 
 【相关设定】
 ${canonText}
-${formatWorkflowLog(context)}
 
 【当前文本】
 ${draftText}

@@ -48,7 +48,7 @@ describe('aggressive cache', () => {
     expect(policy.maxCanonEntries).toBe(2);
   });
 
-  it('trims context and appends workflow log entries', () => {
+  it('trims context entries to configured limits', () => {
     const cache = new AggressiveCacheManager(context.projectProfile.cache);
     cache.prime(context);
 
@@ -57,10 +57,5 @@ describe('aggressive cache', () => {
     expect(prepared.relevantDrafts).toHaveLength(1);
     expect(prepared.relevantCanon[0].content).toContain('cache-trimmed');
     expect(prepared.cache?.strategy).toBe('aggressive');
-
-    cache.appendResult('agent-a', { type: 'text', content: 'result text' });
-    const next = cache.prepareForAgent(context);
-    expect(next.workflowLog).toHaveLength(1);
-    expect(next.workflowLog?.[0].agent).toBe('agent-a');
   });
 });

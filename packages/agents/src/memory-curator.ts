@@ -7,7 +7,6 @@ import type {
   LLMProvider,
 } from '@openwriter/core';
 import { DeepSeekProvider } from '@openwriter/core';
-import { formatWorkflowLog } from './prompt-cache.js';
 
 interface MemoryChange {
   type: 'new' | 'modified' | 'deprecated';
@@ -75,7 +74,6 @@ export class MemoryCurator implements WritingAgent {
 
 【已有设定】
 ${canonText}
-${formatWorkflowLog(context)}
 
 【新文本】
 ${draftText}

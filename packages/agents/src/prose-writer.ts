@@ -10,7 +10,6 @@ import {
   formatDraftContext,
   formatStableCanonPrefix,
   formatStableProjectPrefix,
-  formatWorkflowLog,
 } from './prompt-cache.js';
 
 export class ProseWriter implements WritingAgent {
@@ -54,7 +53,6 @@ export class ProseWriter implements WritingAgent {
       'Write the actual manuscript text requested by the user.',
       formatStableProjectPrefix(context),
       formatStableCanonPrefix(context),
-      formatWorkflowLog(context),
     ].filter(Boolean).join('\n\n');
   }
 

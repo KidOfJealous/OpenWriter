@@ -172,7 +172,7 @@ export function ChatInterface() {
     if (!parsed) {
       pushNotice({
         tone: 'warning',
-        text: 'unknown command. Try /write, /check, /brainstorm, /style, /setting, or /help',
+        text: 'unknown command. Try /write or /help',
       });
       setState(prev => ({ ...prev, input: '' }));
       return;
@@ -237,7 +237,7 @@ export function ChatInterface() {
                 setState(prev => ({ ...prev, input: value }));
               }}
               onSubmit={handleSubmit}
-              placeholder="/write next scene | /check continuity | /brainstorm ideas | /help"
+              placeholder="描述你的写作需求，或 /write 启用文件编辑"
               showCursor={false}
             />
           </Box>
@@ -326,14 +326,11 @@ function SidePanel({ notices }: { notices: WorkbenchNotice[] }) {
 
       <Box borderStyle="round" borderColor="gray" paddingX={1} marginTop={1} flexDirection="column">
         <Text bold>Commands</Text>
-        <Text dimColor>/init name</Text>
-        <Text dimColor>/write task</Text>
-        <Text dimColor>/check task</Text>
-        <Text dimColor>/brainstorm task</Text>
-        <Text dimColor>/style file</Text>
-        <Text dimColor>/save path</Text>
-        <Text dimColor>/config | /provider id | /model id</Text>
-        <Text dimColor>/details | /cd path | /clear</Text>
+        <Text dimColor>{'/write <task>  (enable edits)'}</Text>
+        <Text dimColor>{'/init <name>   (new project)'}</Text>
+        <Text dimColor>/config        (model settings)</Text>
+        <Text dimColor>/clear         (reset session)</Text>
+        <Text dimColor>/quit          (exit)</Text>
       </Box>
 
       {notices.length > 0 && (
@@ -436,17 +433,9 @@ async function runAgentTurn(
     steps: [{
       agent: 'lead-agent',
       description: 'reason about the request and decide whether tools are needed',
-      phase: 'think',
-      role: 'lead',
-      reason: parsed.allowWrites ? 'write tools enabled by explicit user intent' : 'read-only unless the user asks for edits',
       status: 'running',
       startedAt,
     }],
-    rationale: [
-      parsed.allowWrites
-        ? 'File writes can only happen through explicit write/edit tool calls.'
-        : 'This turn exposes read-only tools, so checks and analysis cannot edit files.',
-    ],
   };
 
   // Create AbortController for this turn
@@ -471,7 +460,6 @@ async function runAgentTurn(
       workDir: state.workDir,
       task: parsed.task,
       allowWrites: parsed.allowWrites,
-      modeHint: parsed.modeHint,
       projectConfig: config,
       signal: abortController.signal,
       callbacks: {
@@ -491,8 +479,6 @@ async function runAgentTurn(
               {
                 agent: `tool:${name}`,
                 description: formatToolDescription(name, args),
-                phase: 'tool',
-                role: 'tool',
                 status: 'running',
                 startedAt: stepStartedAt,
               },
@@ -597,7 +583,7 @@ function handleLocalCommand(
     case 'help':
       pushNotice({
         tone: 'info',
-        text: '/write /check /brainstorm /style /setting /plan /save /details /config /provider /model /clear /quit',
+        text: 'Commands: /write <task> (enable file edits) | /init <name> | /save <path> | /config | /provider <id> | /model <id> | /cd <path> | /details | /clear | /quit',
       });
       setState(prev => ({ ...prev, input: '' }));
       return true;
@@ -723,68 +709,11 @@ function handleLocalCommand(
 }
 
 function parseAgentInput(input: string): ParsedAgentTurn | null {
-  if (input.startsWith('/')) {
-    const [command, ...rest] = input.slice(1).split(/\s+/);
-    const task = rest.join(' ').trim();
-    switch (command) {
-      case 'write':
-      case 'w':
-        return {
-          label: 'write',
-          task: task || 'continue writing',
-          allowWrites: true,
-          modeHint: 'The user explicitly invoked /write. Edit files only through write_file or edit_file, and ask if the target is unclear.',
-        };
-      case 'check':
-        return {
-          label: 'check',
-          task: task || 'check the project',
-          allowWrites: false,
-          modeHint: 'Read-only continuity, structure, and consistency check. Do not modify files.',
-        };
-      case 'brainstorm':
-      case 'ideas':
-        return {
-          label: 'brainstorm',
-          task: task || 'brainstorm ideas',
-          allowWrites: false,
-          modeHint: 'Brainstorm naturally. Save or edit files only if the user explicitly asked for that.',
-        };
-      case 'style':
-      case 'polish':
-      case 'revise':
-        return {
-          label: command === 'style' ? 'style' : command,
-          task: task || (command === 'style' ? 'review style' : 'revise text'),
-          allowWrites: command !== 'style',
-          modeHint: command === 'style'
-            ? 'Style review by default. If the user only named a file, read it and give notes instead of editing.'
-            : 'The user requested revision/polish. Use edit_file only after reading the target file.',
-        };
-      case 'setting':
-        return {
-          label: 'setting',
-          task: task || 'work on setting',
-          allowWrites: false,
-          modeHint: 'Handle setting/worldbuilding in the existing workspace structure. Do not assume any fixed folder layout.',
-        };
-      case 'plan':
-        return {
-          label: 'plan',
-          task: task || 'plan structure',
-          allowWrites: false,
-          modeHint: 'Planning is read-only unless the user explicitly asks to write the plan to a file.',
-        };
-      default:
-        return null;
-    }
+  if (/^\/write(\s|$)/.test(input)) {
+    return { label: 'write', task: input.replace(/^\/write\s*/, '').trim() || 'continue writing', allowWrites: true };
   }
-
-  return {
-    label: 'agent',
-    task: input,
-    allowWrites: false,
-  };
+  if (input.startsWith('/')) return null;
+  return { label: 'agent', task: input, allowWrites: false };
 }
 
 function updateRun(
@@ -852,6 +781,26 @@ function formatToolDescription(name: string, args: Record<string, unknown>): str
       return path ? `edit ${path}` : 'edit file';
     case 'write_file':
       return path ? `write ${path}` : 'write file';
+    case 'gather_context':
+      return 'gathering context';
+    case 'analyze_plot':
+      return 'analyzing plot';
+    case 'analyze_characters':
+      return 'analyzing characters';
+    case 'check_continuity':
+      return 'checking continuity';
+    case 'review_style':
+      return 'reviewing style';
+    case 'check_worldbuilding':
+      return 'checking worldbuilding';
+    case 'critique':
+      return 'critiquing';
+    case 'curate_memory':
+      return 'curating memory';
+    case 'write_prose':
+      return 'writing prose';
+    case 'save_canon':
+      return 'saving canon';
     default:
       return name;
   }

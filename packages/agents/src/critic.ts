@@ -6,7 +6,6 @@ import type {
   LLMProvider,
 } from '@openwriter/core';
 import { DeepSeekProvider } from '@openwriter/core';
-import { formatWorkflowLog } from './prompt-cache.js';
 
 interface CritiqueItem {
   priority: 'P0' | 'P1' | 'P2';
@@ -74,7 +73,6 @@ export class Critic implements WritingAgent {
 
 【相关设定】
 ${canonText}
-${formatWorkflowLog(context)}
 
 【待审文本】
 ${draftText}

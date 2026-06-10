@@ -1,5 +1,4 @@
-// Writing Context Packet — the core data structure shared by all subagents
-// Every agent receives the same context packet but produces different outputs.
+// Writing Context Packet — the core data structure shared by all agents
 
 export type MemoryState = 'idea' | 'candidate' | 'canon' | 'deprecated';
 
@@ -63,7 +62,6 @@ export interface WritingContextPacket {
   deprecatedItems: DeprecatedEntry[];
   openQuestions: string[];
   constraints: string[];
-  workflowLog?: WorkflowLogEntry[];
   cache?: CacheSnapshot;
 }
 
@@ -71,34 +69,21 @@ export interface AggressiveCachePolicy {
   enabled: boolean;
   strategy: 'conservative' | 'aggressive';
   stablePrefix: boolean;
-  appendOnlyWorkflowLog: boolean;
   maxCanonEntries: number;
   maxDraftEntries: number;
   maxCanonEntryChars: number;
   maxDraftEntryChars: number;
-  maxWorkflowLogEntries: number;
-  maxResultChars: number;
   maxTotalContextChars: number;
-}
-
-export interface WorkflowLogEntry {
-  index: number;
-  agent: string;
-  type: AgentResultType;
-  content: string;
-  contentHash: string;
 }
 
 export interface CacheSnapshot {
   strategy: AggressiveCachePolicy['strategy'];
   immutablePrefixHash: string;
   immutablePrefixChars: number;
-  workflowLogChars: number;
   approxContextTokens: number;
   trimmed: {
     canonEntries: number;
     draftEntries: number;
-    workflowLogEntries: number;
   };
 }
 
@@ -119,63 +104,13 @@ export interface AgentOptions {
   maxTokens?: number;
   onTextDelta?: (delta: string) => void;
   quiet?: boolean;
-  observer?: WorkflowObserver;
   [key: string]: unknown;
-}
-
-export interface WorkflowAgentEvent {
-  agent: string;
-  index: number;
-  total: number;
-  context?: WritingContextPacket;
-  result?: AgentResult;
-  durationMs?: number;
-  error?: unknown;
-}
-
-export interface WorkflowObserver {
-  onAgentStart?: (event: WorkflowAgentEvent) => void;
-  onAgentComplete?: (event: WorkflowAgentEvent) => void;
-  onAgentError?: (event: WorkflowAgentEvent) => void;
 }
 
 export interface WritingAgent {
   name: string;
   description: string;
   execute(context: WritingContextPacket, options?: AgentOptions): Promise<AgentResult>;
-}
-
-// Workflow
-
-export interface WorkflowStep {
-  agent: string;
-  dependsOn?: string[];
-  inputTransform?: (prev: Record<string, AgentResult>) => WritingContextPacket;
-}
-
-export type WorkflowName = 'brainstorm' | 'setting' | 'chapterWriting' | 'polish' | 'continuityCheck';
-
-export type AgentLoopPhase = 'observe' | 'plan' | 'act' | 'verify' | 'summarize';
-
-export type AgentLoopRole = 'lead' | 'specialist' | 'reviewer' | 'memory';
-
-export interface AgentLoopStep extends WorkflowStep {
-  phase: AgentLoopPhase;
-  role: AgentLoopRole;
-  reason: string;
-}
-
-export interface AgentLoopPlan {
-  workflow: WorkflowName;
-  task: string;
-  label: string;
-  steps: AgentLoopStep[];
-  rationale: string[];
-  skippedAgents: string[];
-}
-
-export interface AgentLoopPlanningOptions {
-  reviewers?: string[];
 }
 
 // LLM Provider

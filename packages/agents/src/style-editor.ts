@@ -6,7 +6,6 @@ import type {
   LLMProvider,
 } from '@openwriter/core';
 import { DeepSeekProvider } from '@openwriter/core';
-import { formatWorkflowLog } from './prompt-cache.js';
 
 interface StyleIssue {
   type: 'translationese' | 'repetition' | 'ai_taste' | 'over_explain' | 'slogan' | 'modern_register' | 'pov_break' | 'other';
@@ -76,7 +75,6 @@ export class StyleEditor implements WritingAgent {
 
 【文风要求】
 ${styleRules.join('\n')}
-${formatWorkflowLog(context)}
 
 【待审文本】
 ${draftText}

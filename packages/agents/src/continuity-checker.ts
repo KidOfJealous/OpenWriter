@@ -6,7 +6,6 @@ import type {
   LLMProvider,
 } from '@openwriter/core';
 import { DeepSeekProvider } from '@openwriter/core';
-import { formatWorkflowLog } from './prompt-cache.js';
 
 interface ContinuityIssue {
   severity: 'hard' | 'soft' | 'uncertain';
@@ -70,7 +69,6 @@ export class ContinuityChecker implements WritingAgent {
 
 【已有设定】
 ${canonText}
-${formatWorkflowLog(context)}
 
 【当前文本】
 ${draftText}

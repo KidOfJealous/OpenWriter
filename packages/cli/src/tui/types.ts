@@ -3,9 +3,6 @@ export type AgentRunStatus = 'queued' | 'running' | 'done' | 'failed';
 export interface AgentRunStep {
   agent: string;
   description: string;
-  phase?: string;
-  role?: string;
-  reason?: string;
   status: AgentRunStatus;
   startedAt?: number;
   durationMs?: number;
@@ -23,8 +20,6 @@ export interface AgentRunRecord {
   startedAt: number;
   durationMs?: number;
   steps: AgentRunStep[];
-  rationale?: string[];
-  skippedAgents?: string[];
   output?: string;
   error?: string;
   usage?: {

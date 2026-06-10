@@ -6,7 +6,6 @@ import type {
   LLMProvider,
 } from '@openwriter/core';
 import { DeepSeekProvider } from '@openwriter/core';
-import { formatWorkflowLog } from './prompt-cache.js';
 
 interface WorldbuildingIssue {
   category: 'institution' | 'geography' | 'culture' | 'technology' | 'magic' | 'terminology';
@@ -71,7 +70,6 @@ export class WorldbuildingAgent implements WritingAgent {
 
 【已有世界观设定】
 ${canonText}
-${formatWorkflowLog(context)}
 
 【新文本】
 ${draftText}

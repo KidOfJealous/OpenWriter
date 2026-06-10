@@ -63,13 +63,10 @@ describe('context-retriever', () => {
       enabled: true,
       strategy: 'aggressive',
       stablePrefix: true,
-      appendOnlyWorkflowLog: true,
       maxCanonEntries: 1,
       maxDraftEntries: 8,
       maxCanonEntryChars: 4000,
       maxDraftEntryChars: 12000,
-      maxWorkflowLogEntries: 12,
-      maxResultChars: 1800,
       maxTotalContextChars: 120000,
     });
 

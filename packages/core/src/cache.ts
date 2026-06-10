@@ -1,25 +1,20 @@
 import { createHash } from 'crypto';
 import type {
-  AgentResult,
   AggressiveCachePolicy,
   CacheSnapshot,
   CanonEntry,
   DraftEntry,
   WritingContextPacket,
-  WorkflowLogEntry,
 } from './types.js';
 
 export const DEFAULT_AGGRESSIVE_CACHE_POLICY: AggressiveCachePolicy = {
   enabled: true,
   strategy: 'aggressive',
   stablePrefix: true,
-  appendOnlyWorkflowLog: true,
   maxCanonEntries: 32,
   maxDraftEntries: 8,
   maxCanonEntryChars: 4000,
   maxDraftEntryChars: 12000,
-  maxWorkflowLogEntries: 12,
-  maxResultChars: 1800,
   maxTotalContextChars: 120000,
 };
 
@@ -49,7 +44,6 @@ export function approximateTokens(text: string): number {
 export class AggressiveCacheManager {
   private readonly policy: AggressiveCachePolicy;
   private immutablePrefix = '';
-  private workflowLog: WorkflowLogEntry[] = [];
 
   constructor(policy?: Partial<AggressiveCachePolicy>) {
     this.policy = resolveAggressiveCachePolicy(policy);
@@ -57,9 +51,6 @@ export class AggressiveCacheManager {
 
   prime(context: WritingContextPacket): void {
     this.immutablePrefix = this.buildImmutablePrefix(context);
-    if (context.workflowLog?.length) {
-      this.workflowLog = context.workflowLog.slice(-this.policy.maxWorkflowLogEntries);
-    }
   }
 
   prepareForAgent(context: WritingContextPacket): WritingContextPacket {
@@ -67,18 +58,9 @@ export class AggressiveCacheManager {
     if (!this.immutablePrefix) this.prime(context);
 
     const stabilized = this.stabilizeContextPacket(context);
-    const workflowLog = this.policy.appendOnlyWorkflowLog
-      ? this.workflowLog.slice(-this.policy.maxWorkflowLogEntries)
-      : [];
-
-    const withLog: WritingContextPacket = {
-      ...stabilized,
-      workflowLog,
-    };
-
     return {
-      ...withLog,
-      cache: this.buildSnapshot(withLog),
+      ...stabilized,
+      cache: this.buildSnapshot(stabilized),
     };
   }
 
@@ -94,36 +76,11 @@ export class AggressiveCacheManager {
       ...context,
       relevantCanon,
       relevantDrafts,
-      workflowLog: context.workflowLog?.slice(-this.policy.maxWorkflowLogEntries),
     };
-  }
-
-  appendResult(agent: string, result: AgentResult): WorkflowLogEntry | null {
-    if (!this.policy.enabled || !this.policy.appendOnlyWorkflowLog) return null;
-
-    const content = this.distillResult(result);
-    const entry: WorkflowLogEntry = {
-      index: this.workflowLog.length + 1,
-      agent,
-      type: result.type,
-      content,
-      contentHash: hashText(content),
-    };
-
-    this.workflowLog.push(entry);
-    if (this.workflowLog.length > this.policy.maxWorkflowLogEntries) {
-      this.workflowLog = this.workflowLog.slice(-this.policy.maxWorkflowLogEntries);
-    }
-
-    return entry;
   }
 
   getSnapshot(context: WritingContextPacket): CacheSnapshot {
     return this.buildSnapshot(context);
-  }
-
-  getWorkflowLog(): WorkflowLogEntry[] {
-    return this.workflowLog.slice(-this.policy.maxWorkflowLogEntries);
   }
 
   private buildImmutablePrefix(context: WritingContextPacket): string {
@@ -142,22 +99,17 @@ export class AggressiveCacheManager {
       relevantCanon: context.relevantCanon,
       relevantDrafts: context.relevantDrafts,
       deprecatedItems: context.deprecatedItems,
-      workflowLog: context.workflowLog,
       constraints: context.constraints,
     });
-
-    const workflowLogText = stableStringify(context.workflowLog ?? []);
 
     return {
       strategy: this.policy.strategy,
       immutablePrefixHash: hashText(this.immutablePrefix),
       immutablePrefixChars: this.immutablePrefix.length,
-      workflowLogChars: workflowLogText.length,
       approxContextTokens: approximateTokens(contextText),
       trimmed: {
         canonEntries: context.relevantCanon.length,
         draftEntries: context.relevantDrafts.length,
-        workflowLogEntries: context.workflowLog?.length ?? 0,
       },
     };
   }
@@ -215,14 +167,6 @@ export class AggressiveCacheManager {
       relevantCanon: limitEntriesByBudget(relevantCanon, canonBudget),
       relevantDrafts: limitEntriesByBudget(relevantDrafts, draftBudget),
     };
-  }
-
-  private distillResult(result: AgentResult): string {
-    const content = typeof result.content === 'string'
-      ? result.content
-      : stableStringify(result.content);
-
-    return limitText(content, this.policy.maxResultChars);
   }
 }
 

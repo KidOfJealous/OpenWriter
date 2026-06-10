@@ -32,13 +32,11 @@ Usage:
   wa --version       Show version
 
 Inside the TUI:
+  Type naturally     The agent decides which tools and specialists to use
+  /write <task>      Enable file edits for this turn
   /init <name>       Initialize a writing project
-  /write <task>      Allow explicit file edits through tools
-  /check <task>      Read-only continuity or structure check
-  /brainstorm <task> Brainstorm naturally; save only when asked
-  /style <file>      Review style by default
-  /setting <task>    Expand setting/worldbuilding
-  /config            Configure providers
+  /save <path>       Save the latest output to a file
+  /config            Configure providers and models
   /provider <id>     Switch provider preset
   /model <id>        Switch model
   /cd <path>         Change workspace

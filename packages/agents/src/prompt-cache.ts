@@ -48,13 +48,3 @@ export function formatDraftContext(context: WritingContextPacket): string {
     ].join('\n')),
   ].join('\n\n');
 }
-
-export function formatWorkflowLog(context: WritingContextPacket): string {
-  if (!context.workflowLog?.length) return '';
-
-  const lines = context.workflowLog.map(entry => {
-    return `#${entry.index} ${entry.agent} (${entry.type}, ${entry.contentHash})\n${entry.content}`;
-  });
-
-  return `# Append-Only Workflow Log\n${lines.join('\n\n')}`;
-}
