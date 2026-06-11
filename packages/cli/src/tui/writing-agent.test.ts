@@ -118,4 +118,50 @@ describe('writing agent loop', () => {
     expect(result.diffs).toEqual([]);
     expect(readFileSync(file, 'utf-8')).toBe('old draft\n');
   });
+
+  it('saves canon entries into OpenWriter managed memory instead of a user canon directory', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'openwriter-agent-'));
+
+    const provider = new ScriptedProvider([
+      {
+        content: '',
+        toolCalls: [{
+          id: 'call_1',
+          type: 'function',
+          function: {
+            name: 'save_canon',
+            arguments: JSON.stringify({
+              file: 'characters/林上',
+              status: 'canon',
+              category: 'character',
+              content: '林上习惯在压力下保持沉默。',
+            }),
+          },
+          parsedArguments: {
+            file: 'characters/林上',
+            status: 'canon',
+            category: 'character',
+            content: '林上习惯在压力下保持沉默。',
+          },
+        }],
+      },
+      {
+        content: 'Saved.',
+        toolCalls: [],
+      },
+    ]);
+
+    const result = await runWritingAgentTurn({
+      provider,
+      workDir: tempDir,
+      task: '记住林上的人物设定',
+      allowWrites: true,
+    });
+
+    const memory = readFileSync(join(tempDir, '.openwriter', 'memory', 'characters', '林上.md'), 'utf-8');
+    expect(result.content).toBe('Saved.');
+    expect(memory).toContain('status: canon');
+    expect(memory).toContain('category: character');
+    expect(memory).toContain('林上习惯在压力下保持沉默。');
+  });
 });

@@ -9,14 +9,20 @@ import type {
   DeprecatedEntry,
   ProjectProfile,
 } from '@openwriter/core';
-import { hashText, resolveAggressiveCachePolicy } from '@openwriter/core';
-import { readFileSync, readdirSync, statSync } from 'fs';
-import { extname, join, relative, resolve } from 'path';
+import {
+  OPENWRITER_STATE_DIR,
+  hashText,
+  resolveAggressiveCachePolicy,
+  resolveOpenWriterMemoryDir,
+} from '@openwriter/core';
+import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
+import { extname, isAbsolute, join, relative, resolve } from 'path';
 
 const TEXT_EXTENSIONS = new Set(['.md', '.markdown', '.txt', '.text', '.rst', '.adoc']);
 const IGNORED_DIRECTORIES = new Set([
   '.git',
   '.obsidian',
+  OPENWRITER_STATE_DIR,
   '.qoder',
   '.vscode',
   'node_modules',
@@ -48,10 +54,19 @@ export class ContextRetriever implements WritingAgent {
     const projectDir = process.cwd();
     const profile = context.projectProfile;
     const policy = resolveAggressiveCachePolicy(profile.cache);
+    const memoryDir = resolveOpenWriterMemoryDir(projectDir);
 
-    const canon: CanonEntry[] = [];
-    const drafts = this.loadWorkspaceEntries(projectDir);
-    const deprecated = this.loadDeprecatedEntries(projectDir, profile);
+    const memoryEntries = this.mergeCanonEntries(
+      context.relevantCanon,
+      this.loadMemoryEntries(projectDir, memoryDir),
+    );
+    const canon = memoryEntries.filter(entry => this.shouldIncludeCanonEntry(entry, profile));
+    const drafts = this.loadWorkspaceEntries(projectDir, [memoryDir]);
+    const deprecated = this.mergeDeprecatedEntries(
+      context.deprecatedItems,
+      memoryEntries.filter(entry => entry.status === 'deprecated'),
+      this.loadDeprecatedEntries(projectDir, profile),
+    );
 
     const retrievalConfig = profile.retrieval;
     const scoredCanon = this.scoreAndRank(canon, context.task, retrievalConfig);
@@ -102,6 +117,7 @@ export class ContextRetriever implements WritingAgent {
             tokenHits: this.tokenCacheHits,
             tokenMisses: this.tokenCacheMisses,
           },
+          memoryStore: `${OPENWRITER_STATE_DIR}/memory`,
         },
       },
       metadata: {
@@ -267,8 +283,76 @@ export class ContextRetriever implements WritingAgent {
     return merged;
   }
 
-  private loadWorkspaceEntries(projectDir: string): DraftEntry[] {
-    return this.findWorkspaceTextFiles(projectDir).map(file => ({
+  private mergeCanonEntries(existing: CanonEntry[], loaded: CanonEntry[]): CanonEntry[] {
+    const seen = new Set<string>();
+    const merged: CanonEntry[] = [];
+
+    for (const entry of [...existing, ...loaded]) {
+      const key = `${entry.source}:${entry.status}:${hashText(entry.content)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(entry);
+    }
+
+    return merged.sort((a, b) => a.source.localeCompare(b.source));
+  }
+
+  private mergeDeprecatedEntries(
+    existing: DeprecatedEntry[],
+    deprecatedMemory: CanonEntry[],
+    loaded: DeprecatedEntry[],
+  ): DeprecatedEntry[] {
+    const seen = new Set<string>();
+    const merged: DeprecatedEntry[] = [];
+
+    for (const entry of [
+      ...existing,
+      ...deprecatedMemory.map(item => ({
+        source: item.source,
+        old: item.content,
+        reason: 'Marked deprecated in memory source.',
+      })),
+      ...loaded,
+    ]) {
+      const key = `${entry.source}:${hashText(entry.old)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(entry);
+    }
+
+    return merged.sort((a, b) => a.source.localeCompare(b.source));
+  }
+
+  private shouldIncludeCanonEntry(entry: CanonEntry, profile: ProjectProfile): boolean {
+    if (entry.status === 'deprecated') return false;
+    const allowed = new Set(profile.memory?.canonStates ?? ['idea', 'candidate', 'canon']);
+    return allowed.has(entry.status);
+  }
+
+  private loadMemoryEntries(projectDir: string, memoryDir: string): CanonEntry[] {
+    const entries: CanonEntry[] = [];
+    if (!existsSync(memoryDir) || !statSync(memoryDir).isDirectory()) return entries;
+
+    for (const file of this.findWorkspaceTextFiles(memoryDir, [])) {
+      entries.push(this.readMemoryEntry(projectDir, file));
+    }
+
+    return this.mergeCanonEntries([], entries);
+  }
+
+  private readMemoryEntry(projectDir: string, file: string): CanonEntry {
+    const raw = this.readCachedFile(file);
+    const parsed = parseFrontmatter(raw);
+    return {
+      source: this.toWorkspacePath(projectDir, file),
+      status: parseMemoryState(parsed.status) ?? 'canon',
+      content: parsed.body,
+      tags: parsed.category ? [parsed.category] : undefined,
+    };
+  }
+
+  private loadWorkspaceEntries(projectDir: string, excludedRoots: string[]): DraftEntry[] {
+    return this.findWorkspaceTextFiles(projectDir, excludedRoots).map(file => ({
       source: this.toWorkspacePath(projectDir, file),
       content: this.readCachedFile(file),
       lastModified: statSync(file).mtime.toISOString(),
@@ -279,18 +363,32 @@ export class ContextRetriever implements WritingAgent {
     return [];
   }
 
-  private findWorkspaceTextFiles(dir: string): string[] {
+  private findWorkspaceTextFiles(dir: string, excludedRoots: string[]): string[] {
     const files: string[] = [];
+    if (this.isPathExcluded(resolve(dir), excludedRoots)) return files;
+
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       if (entry.name.startsWith('.') || IGNORED_DIRECTORIES.has(entry.name)) continue;
       const fullPath = join(dir, entry.name);
+      if (this.isPathExcluded(resolve(fullPath), excludedRoots)) continue;
       if (entry.isDirectory()) {
-        files.push(...this.findWorkspaceTextFiles(fullPath));
-      } else if (TEXT_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
+        files.push(...this.findWorkspaceTextFiles(fullPath, excludedRoots));
+      } else if (this.isWorkspaceTextFile(fullPath)) {
         files.push(fullPath);
       }
     }
     return files;
+  }
+
+  private isWorkspaceTextFile(file: string): boolean {
+    return TEXT_EXTENSIONS.has(extname(file).toLowerCase());
+  }
+
+  private isPathExcluded(path: string, excludedRoots: string[]): boolean {
+    return excludedRoots.some(root => {
+      const rel = relative(root, path);
+      return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+    });
   }
 
   private selectScored<T extends { source?: string; content: string }>(
@@ -336,4 +434,30 @@ export class ContextRetriever implements WritingAgent {
     if (matches) entities.push(...matches);
     return entities;
   }
+}
+
+function parseFrontmatter(raw: string): { status?: string; category?: string; body: string } {
+  const match = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+  if (!match) return { body: raw };
+  const frontmatter = match[1];
+  const body = match[2];
+  const fields: Record<string, string> = {};
+  for (const line of frontmatter.split('\n')) {
+    const colonIdx = line.indexOf(':');
+    if (colonIdx > 0) {
+      fields[line.slice(0, colonIdx).trim()] = line.slice(colonIdx + 1).trim();
+    }
+  }
+  return { status: fields.status, category: fields.category, body };
+}
+
+function parseMemoryState(value?: string): CanonEntry['status'] | null {
+  if (value === 'idea' || value === 'candidate' || value === 'canon' || value === 'deprecated') {
+    return value;
+  }
+  return null;
+}
+
+function normalizePath(path: string): string {
+  return path.replace(/\\/g, '/');
 }

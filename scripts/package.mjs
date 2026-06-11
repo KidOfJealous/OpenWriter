@@ -55,13 +55,13 @@ async function packageTarget(platform) {
     await copyWorkspacePackage(packageName, packageDir);
   }
 
-  // Copy CLI dependencies for TUI
-  const cliPackageJson = JSON.parse(await readFile(join(rootDir, 'packages', 'cli', 'package.json'), 'utf-8'));
-  const cliDependencies = Object.keys(cliPackageJson.dependencies || {}).filter(
-    name => !name.startsWith('@openwriter')
-  );
-  
-  for (const packageName of cliDependencies) {
+  const externalDependencies = await collectExternalRuntimeDependencies([
+    'core',
+    'agents',
+    'connectors',
+    'cli',
+  ]);
+  for (const packageName of externalDependencies) {
     await copyExternalPackage(packageName, packageDir);
   }
 
@@ -71,6 +71,17 @@ async function packageTarget(platform) {
   }
   await writeReadme(packageDir, platform);
   await archivePackage(packageName, platform);
+}
+
+async function collectExternalRuntimeDependencies(packageNames) {
+  const dependencies = new Set();
+  for (const packageName of packageNames) {
+    const packageJson = JSON.parse(await readFile(join(rootDir, 'packages', packageName, 'package.json'), 'utf-8'));
+    for (const dependency of Object.keys(packageJson.dependencies || {})) {
+      if (!dependency.startsWith('@openwriter')) dependencies.add(dependency);
+    }
+  }
+  return [...dependencies].sort();
 }
 
 async function writeRuntimePackage(packageDir, platform) {

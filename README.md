@@ -28,7 +28,7 @@
 ## Features
 
 - **Multi-agent architecture.** Specialist agents for plot structure, character consistency, style editing, worldbuilding, and continuity checking — orchestrated by a lead agent.
-- **Persistent memory system.** Canon entries (characters, settings, timeline) persist in `canon/` directory across sessions. `curate_memory` extracts changes, `save_canon` writes them to disk.
+- **Persistent memory system.** Canon entries (characters, settings, timeline) persist in OpenWriter-managed local memory across sessions. `curate_memory` extracts changes, `save_canon` writes them to disk.
 - **Smart context retrieval.** TF-IDF-like scoring (exact match + cosine similarity + recency) finds relevant drafts and canon for each task.
 - **Aggressive prompt caching.** Stable prefix ordering and context trimming maximize LLM prefix cache hits, reducing token costs.
 - **Terminal-native TUI.** Built with React/Ink for a rich interactive experience: live streaming, tool execution progress, session usage tracking.

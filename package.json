@@ -7,7 +7,9 @@
     "packages/*"
   ],
   "scripts": {
+    "clean": "node scripts/clean.mjs",
     "build": "npm run build -w packages/core -w packages/agents -w packages/connectors -w packages/cli",
+    "pack:npm": "npm run clean && npm run build && npm pack -w packages/core -w packages/agents -w packages/connectors -w packages/cli --dry-run",
     "package": "node scripts/package.mjs --all",
     "package:win": "node scripts/package.mjs --platform win32",
     "package:linux": "node scripts/package.mjs --platform linux",

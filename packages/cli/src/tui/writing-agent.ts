@@ -13,6 +13,10 @@ import type {
   WritingContextPacket,
 } from '@openwriter/core';
 import {
+  OPENWRITER_STATE_DIR,
+  resolveOpenWriterMemoryFile,
+} from '@openwriter/core';
+import {
   ContextRetriever,
   ProseWriter,
   PlotArchitect,
@@ -37,6 +41,7 @@ const MAX_RESULT_LIMIT = 800;
 const IGNORED_DIRS = new Set([
   '.git',
   '.obsidian',
+  OPENWRITER_STATE_DIR,
   '.qoder',
   '.vscode',
   'node_modules',
@@ -270,12 +275,12 @@ function buildSystemPrompt(projectConfig?: ProjectConfig | null): string {
     '',
     'MEMORY TOOLS:',
     '- curate_memory: analyze recent writing to extract setting changes, character updates, timeline shifts. Returns a changelog of proposed changes.',
-    '- save_canon: persist a canon entry (character, setting, timeline) to the workspace canon/ directory. Use after curate_memory to make changes permanent across sessions.',
+    '- save_canon: persist a durable memory entry (character, setting, timeline) to OpenWriter managed memory. Use after curate_memory to make changes permanent across sessions.',
     '',
     'MEMORY WORKFLOW:',
     '1. After writing a chapter or scene, call curate_memory to identify new lore.',
     '2. Review the changelog, then call save_canon for each confirmed entry.',
-    '3. Next session\'s gather_context will automatically pick up saved canon from canon/.',
+    '3. Next session\'s gather_context will automatically pick up saved OpenWriter memory.',
     '',
     'DECISION RULES:',
     '1. Simple file questions → read_file and answer directly.',
@@ -614,34 +619,6 @@ class WritingToolRuntime {
     };
   }
 
-  private loadCanonEntries(): Array<{ source: string; status: 'idea' | 'candidate' | 'canon' | 'deprecated'; content: string; tags?: string[] }> {
-    const canonDir = join(this.workDir, 'canon');
-    if (!existsSync(canonDir) || !statSync(canonDir).isDirectory()) return [];
-
-    const entries: Array<{ source: string; status: 'idea' | 'candidate' | 'canon' | 'deprecated'; content: string; tags?: string[] }> = [];
-    const walk = (dir: string) => {
-      for (const entry of readdirSync(dir, { withFileTypes: true })) {
-        if (entry.isDirectory()) {
-          walk(join(dir, entry.name));
-        } else if (entry.isFile() && entry.name.endsWith('.md')) {
-          const absPath = join(dir, entry.name);
-          const relPath = normalizePath(relative(this.workDir, absPath));
-          const raw = readFileSync(absPath, 'utf-8');
-          const parsed = parseFrontmatter(raw);
-          entries.push({
-            source: relPath,
-            status: (parsed.status as 'idea' | 'candidate' | 'canon' | 'deprecated') ?? 'candidate',
-            content: parsed.body,
-            tags: parsed.category ? [parsed.category] : undefined,
-          });
-        }
-      }
-    };
-    walk(canonDir);
-    entries.sort((a, b) => a.source.localeCompare(b.source));
-    return entries;
-  }
-
   private buildProjectProfile(): ProjectProfile {
     if (this.projectConfig) {
       return {
@@ -657,6 +634,7 @@ class WritingToolRuntime {
           pov: this.projectConfig.style.pov,
           taboo: this.projectConfig.style.taboo,
         },
+        memory: this.projectConfig.memory,
         retrieval: this.projectConfig.retrieval,
         cache: this.projectConfig.cache,
       };
@@ -677,14 +655,11 @@ class WritingToolRuntime {
       execute: async args => {
         const task = requiredString(args.task, 'task');
 
-        // Scan canon/ directory for persistent memory entries
-        const canonEntries = this.loadCanonEntries();
-
         const retriever = new ContextRetriever();
         const baseContext: WritingContextPacket = {
           task,
           projectProfile: this.buildProjectProfile(),
-          relevantCanon: canonEntries,
+          relevantCanon: [],
           relevantDrafts: [],
           deprecatedItems: [],
           openQuestions: [],
@@ -693,16 +668,12 @@ class WritingToolRuntime {
         const result = await retriever.execute(baseContext);
         const content = result.content as Record<string, unknown>;
         const packet = (content?.packet ?? baseContext) as WritingContextPacket;
-        // Ensure canon entries from disk are preserved even if retriever replaces them
-        if (canonEntries.length > 0 && packet.relevantCanon.length === 0) {
-          packet.relevantCanon = canonEntries;
-        }
         this.cachedContextPacket = packet;
 
         const summary = content?.summary as Record<string, unknown> | undefined;
         const lines: string[] = [];
         if (summary) {
-          lines.push(`Found ${summary.draftCount ?? 0} file(s), ${canonEntries.length} canon, ${summary.deprecatedCount ?? 0} deprecated.`);
+          lines.push(`Found ${summary.draftCount ?? 0} file(s), ${summary.canonCount ?? 0} memory, ${summary.deprecatedCount ?? 0} deprecated.`);
           const scores = summary.relevanceScores as Array<{ source: string; score: number }> | undefined;
           if (scores?.length) {
             lines.push('Top relevant files:');
@@ -711,8 +682,8 @@ class WritingToolRuntime {
             }
           }
         }
-        if (canonEntries.length > 0) {
-          lines.push(`Canon entries loaded: ${canonEntries.map(e => e.source).join(', ')}`);
+        if (packet.relevantCanon.length > 0) {
+          lines.push(`Memory entries loaded: ${packet.relevantCanon.map(e => e.source).join(', ')}`);
         }
         return {
           ok: true,
@@ -726,11 +697,11 @@ class WritingToolRuntime {
   private saveCanonTool(): AgentTool {
     return {
       writes: true,
-      definition: defineTool('save_canon', 'Persist a setting/character/timeline entry to the workspace canon/ directory so it is remembered across sessions. Use after curate_memory to make changes permanent.', {
+      definition: defineTool('save_canon', 'Persist a setting/character/timeline entry to OpenWriter managed memory so it is remembered across sessions. Use after curate_memory to make changes permanent.', {
         type: 'object',
         required: ['file', 'status', 'category', 'content'],
         properties: {
-          file: { type: 'string', description: 'File name inside canon/ (e.g. "characters/林上" or "world-rules"). The .md extension is added automatically.' },
+          file: { type: 'string', description: 'Stable memory id or title, e.g. "characters/林上" or "world-rules". The .md extension is added automatically inside OpenWriter memory.' },
           status: { type: 'string', enum: ['idea', 'candidate', 'canon', 'deprecated'], description: 'Memory status. New entries default to "candidate".' },
           category: { type: 'string', enum: ['character', 'setting', 'timeline', 'other'], description: 'Entry category.' },
           content: { type: 'string', description: 'Markdown content describing the canon entry.' },
@@ -742,11 +713,7 @@ class WritingToolRuntime {
         const category = requiredString(args.category, 'category');
         const content = requiredString(args.content, 'content');
 
-        const canonDir = join(this.workDir, 'canon');
-        const fileName = file.endsWith('.md') ? file : `${file}.md`;
-        const filePath = join(canonDir, fileName);
-
-        const target = this.resolvePath(join('canon', fileName));
+        const target = resolveOpenWriterMemoryFile(this.workDir, file);
         const now = new Date().toISOString().slice(0, 10);
         const frontmatter = `---\nstatus: ${status}\ncategory: ${category}\nupdated: ${now}\n---\n\n`;
         const fullContent = frontmatter + content;
@@ -758,8 +725,8 @@ class WritingToolRuntime {
         return {
           ok: true,
           wrote: true,
-          summary: existed ? `updated canon: ${fileName}` : `created canon: ${fileName}`,
-          content: `${existed ? 'updated' : 'created'} canon/${fileName} [${status}] (${category})`,
+          summary: existed ? `updated memory: ${target.fileName}` : `created memory: ${target.fileName}`,
+          content: `${existed ? 'updated' : 'created'} OpenWriter memory ${target.fileName} [${status}] (${category})`,
         };
       },
     };
@@ -810,7 +777,7 @@ class WritingToolRuntime {
         }
       }
       drafts.sort((a, b) => a.source.localeCompare(b.source));
-      return {
+      const baseContext: WritingContextPacket = {
         task,
         projectProfile: this.buildProjectProfile(),
         relevantCanon: [],
@@ -819,6 +786,10 @@ class WritingToolRuntime {
         openQuestions: [],
         constraints: [],
       };
+      const retriever = new ContextRetriever();
+      const result = await retriever.execute(baseContext);
+      const content = result.content as Record<string, unknown>;
+      return (content?.packet ?? baseContext) as WritingContextPacket;
     }
 
     const retriever = new ContextRetriever();
@@ -1108,21 +1079,6 @@ ${oldText}`,
   } catch {
     // Compaction failure is non-fatal; the loop continues with the full history
   }
-}
-
-function parseFrontmatter(raw: string): { status?: string; category?: string; body: string } {
-  const match = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
-  if (!match) return { body: raw };
-  const frontmatter = match[1];
-  const body = match[2];
-  const fields: Record<string, string> = {};
-  for (const line of frontmatter.split('\n')) {
-    const colonIdx = line.indexOf(':');
-    if (colonIdx > 0) {
-      fields[line.slice(0, colonIdx).trim()] = line.slice(colonIdx + 1).trim();
-    }
-  }
-  return { status: fields.status, category: fields.category, body };
 }
 
 function normalizePath(path: string): string {

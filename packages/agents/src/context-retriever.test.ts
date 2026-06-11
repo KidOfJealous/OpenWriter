@@ -107,4 +107,42 @@ describe('context-retriever', () => {
       rmSync(workspace, { recursive: true, force: true });
     }
   });
+
+  it('loads OpenWriter managed memory without requiring a user canon directory', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'openwriter-memory-'));
+    const oldCwd = process.cwd();
+    try {
+      mkdirSync(join(workspace, '.openwriter', 'memory', 'characters'), { recursive: true });
+      mkdirSync(join(workspace, 'chapters'), { recursive: true });
+      writeFileSync(
+        join(workspace, '.openwriter', 'memory', 'characters', '夏原.md'),
+        '---\nstatus: canon\ncategory: character\n---\n\n夏原害怕深水，但会在必要时隐瞒这一点。',
+        'utf-8',
+      );
+      writeFileSync(join(workspace, 'chapters', 'one.md'), '夏原经过码头。', 'utf-8');
+      process.chdir(workspace);
+
+      const result = await retriever.execute({
+        task: '检查夏原是否会下水',
+        projectProfile: {
+          name: 'vault',
+          language: 'zh-CN',
+          genre: 'fantasy',
+        },
+        relevantCanon: [],
+        relevantDrafts: [],
+        deprecatedItems: [],
+        openQuestions: [],
+        constraints: [],
+      } satisfies WritingContextPacket);
+
+      const content = result.content as { packet: WritingContextPacket };
+      expect(content.packet.relevantCanon[0].source).toBe('.openwriter/memory/characters/夏原.md');
+      expect(content.packet.relevantCanon[0].content).toContain('害怕深水');
+      expect(content.packet.relevantDrafts.some(entry => entry.source.startsWith('.openwriter/'))).toBe(false);
+    } finally {
+      process.chdir(oldCwd);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
 });
